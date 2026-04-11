@@ -37,4 +37,4 @@ ENV PORT=8000
 
 # No Docker HEALTHCHECK — let Railway handle it via railway.json
 # Start the server (railway.json startCommand overrides this)
-CMD uvicorn server:app --host 0.0.0.0 --port ${PORT} --workers 1
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1"]
