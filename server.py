@@ -9,11 +9,15 @@ Run locally:  uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
 import uuid
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("surgeonagent")
 
 # Fix Windows console encoding
 if sys.platform == "win32":
@@ -23,20 +27,30 @@ if sys.platform == "win32":
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+logger.info("Starting SurgeonAgent server...")
+logger.info(f"PORT={os.environ.get('PORT', 'not set')}")
+logger.info(f"ANTHROPIC_API_KEY={'set' if os.environ.get('ANTHROPIC_API_KEY') else 'NOT SET'}")
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+logger.info("FastAPI imported OK")
 
-from claude_agent_sdk import (
-    tool,
-    create_sdk_mcp_server,
-    ClaudeSDKClient,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    ResultMessage,
-    SystemMessage,
-    TextBlock,
-)
+try:
+    from claude_agent_sdk import (
+        tool,
+        create_sdk_mcp_server,
+        ClaudeSDKClient,
+        ClaudeAgentOptions,
+        AssistantMessage,
+        ResultMessage,
+        SystemMessage,
+        TextBlock,
+    )
+    logger.info("claude_agent_sdk imported OK")
+except Exception as e:
+    logger.error(f"Failed to import claude_agent_sdk: {e}")
+    raise
 
 from research import (
     lookup_npi as _lookup_npi,
@@ -50,6 +64,7 @@ from research import (
     save_cache,
 )
 from profile_generator import generate_profile
+logger.info("All imports complete")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -276,10 +291,18 @@ Hiatal Hernia, Other Thoracic.
 
 app = FastAPI(title="SurgeonAgent", version="1.0.0")
 
+logger.info("FastAPI app created")
+
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("SurgeonAgent server is UP and ready to accept connections")
+    asyncio.create_task(_cleanup_loop())
+
 
 @app.get("/health")
 async def health():
-    """Health check endpoint for Azure App Service probes."""
+    """Health check endpoint."""
     return {"status": "healthy", "active_sessions": len(sessions)}
 
 
@@ -416,9 +439,7 @@ async def download_file(session_id: str, filename: str):
 # Session cleanup background task
 # ---------------------------------------------------------------------------
 
-@app.on_event("startup")
-async def startup_cleanup_task():
-    asyncio.create_task(_cleanup_loop())
+## Cleanup task is started in on_startup() above
 
 
 async def _cleanup_loop():
