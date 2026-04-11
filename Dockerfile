@@ -24,7 +24,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code and data
-COPY agent.py server.py research.py profile_generator.py ./
+COPY agent.py server.py start.py research.py profile_generator.py ./
 COPY static/ ./static/
 COPY SurgeonScores/ ./SurgeonScores/
 COPY NationalTop80Score.csv ./
@@ -37,4 +37,4 @@ ENV PORT=8000
 
 # No Docker HEALTHCHECK — let Railway handle it via railway.json
 # Start the server (railway.json startCommand overrides this)
-CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port $PORT --workers 1"]
+CMD ["python", "start.py"]
