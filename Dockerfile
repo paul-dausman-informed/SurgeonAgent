@@ -34,11 +34,7 @@ RUN mkdir -p output research_cache
 
 # Railway injects PORT env var; default to 8000 for local dev
 ENV PORT=8000
-EXPOSE ${PORT}
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
-
-# Railway start command is in railway.json; this is the fallback
+# No Docker HEALTHCHECK — let Railway handle it via railway.json
+# Start the server (railway.json startCommand overrides this)
 CMD uvicorn server:app --host 0.0.0.0 --port ${PORT} --workers 1
