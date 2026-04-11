@@ -1,0 +1,8 @@
+claude-agent-sdk>=0.1.56
+fastapi>=0.115
+uvicorn[standard]>=0.27
+websockets>=12.0
+python-dotenv>=1.0
+requests>=2.31
+beautifulsoup4>=4.12
+python-docx>=1.1

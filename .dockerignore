@@ -1,0 +1,9 @@
+.env
+.git
+.claude
+__pycache__
+*.pyc
+output/
+research_cache/
+*.docx
+node_modules/

@@ -1,0 +1,10 @@
+.env
+research_cache/
+output/
+__pycache__/
+*.pyc
+.claude/
+node_modules/
+*.docx
+deploy-azure.sh
+deploy-azure.ps1

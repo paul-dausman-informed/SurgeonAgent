@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SurgeonAgent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f0f2f5;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: #1B4F72;
+            color: white;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+
+        header h1 { font-size: 20px; font-weight: 600; }
+        header .subtitle { font-size: 13px; opacity: 0.8; }
+
+        #status {
+            margin-left: auto;
+            font-size: 12px;
+            padding: 4px 12px;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.15);
+        }
+        #status.connected { background: #27ae60; }
+        #status.connecting { background: #f39c12; }
+        #status.error { background: #e74c3c; }
+
+        #chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        .message {
+            max-width: 80%;
+            padding: 14px 18px;
+            border-radius: 16px;
+            line-height: 1.55;
+            font-size: 14.5px;
+            word-wrap: break-word;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            align-self: flex-end;
+            background: #1B4F72;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant {
+            align-self: flex-start;
+            background: white;
+            color: #1a1a1a;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+
+        /* Markdown-like formatting inside assistant messages */
+        .message.assistant h2,
+        .message.assistant h3 {
+            margin-top: 12px;
+            margin-bottom: 6px;
+            color: #1B4F72;
+        }
+        .message.assistant h2 { font-size: 16px; }
+        .message.assistant h3 { font-size: 14.5px; }
+
+        .message.assistant table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+            font-size: 13px;
+        }
+        .message.assistant th {
+            background: #1B4F72;
+            color: white;
+            padding: 8px 10px;
+            text-align: left;
+            font-weight: 600;
+        }
+        .message.assistant td {
+            padding: 7px 10px;
+            border-bottom: 1px solid #e8e8e8;
+        }
+        .message.assistant tr:nth-child(even) td {
+            background: #f5f8fa;
+        }
+        .message.assistant strong { color: #1B4F72; }
+        .message.assistant blockquote {
+            border-left: 3px solid #1B4F72;
+            padding: 8px 12px;
+            margin: 8px 0;
+            background: #f5f8fa;
+            border-radius: 0 8px 8px 0;
+            font-size: 13.5px;
+        }
+        .message.assistant ul, .message.assistant ol {
+            padding-left: 20px;
+            margin: 6px 0;
+        }
+        .message.assistant li { margin: 3px 0; }
+        .message.assistant hr {
+            border: none;
+            border-top: 1px solid #ddd;
+            margin: 12px 0;
+        }
+
+        .message.system {
+            align-self: center;
+            background: #fff3cd;
+            color: #856404;
+            font-size: 13px;
+            text-align: center;
+            border-radius: 8px;
+        }
+
+        .download-link {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 8px 18px;
+            background: #27ae60;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 13.5px;
+            font-weight: 600;
+            transition: background 0.15s;
+        }
+        .download-link:hover { background: #219a52; }
+
+        .typing-indicator {
+            align-self: flex-start;
+            padding: 14px 18px;
+            background: white;
+            border-radius: 16px;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            display: none;
+        }
+        .typing-indicator.visible { display: flex; gap: 5px; align-items: center; }
+        .typing-indicator span {
+            width: 8px; height: 8px;
+            background: #1B4F72;
+            border-radius: 50%;
+            animation: bounce 1.2s infinite;
+            opacity: 0.4;
+        }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bounce {
+            0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+            30% { transform: translateY(-6px); opacity: 1; }
+        }
+
+        #input-area {
+            background: white;
+            border-top: 1px solid #ddd;
+            padding: 16px 24px;
+        }
+
+        #input-form {
+            display: flex;
+            gap: 10px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        #user-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #ddd;
+            border-radius: 12px;
+            font-size: 14.5px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        #user-input:focus { border-color: #1B4F72; }
+        #user-input:disabled { background: #f5f5f5; }
+
+        #send-btn {
+            padding: 12px 28px;
+            background: #1B4F72;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 14.5px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        #send-btn:hover { background: #154360; }
+        #send-btn:disabled { background: #93b3cc; cursor: not-allowed; }
+
+        @media (max-width: 600px) {
+            #chat-container { padding: 12px; }
+            .message { max-width: 92%; font-size: 14px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <h1>SurgeonAgent</h1>
+            <div class="subtitle">Find the best surgeon for your procedure</div>
+        </div>
+        <div id="status" class="connecting">Connecting...</div>
+    </header>
+
+    <div id="chat-container">
+        <!-- Messages appear here -->
+        <div class="typing-indicator" id="typing">
+            <span></span><span></span><span></span>
+        </div>
+    </div>
+
+    <div id="input-area">
+        <form id="input-form">
+            <input type="text" id="user-input" placeholder="Type your message..." autocomplete="off" disabled />
+            <button type="submit" id="send-btn" disabled>Send</button>
+        </form>
+    </div>
+
+    <script>
+        const chatContainer = document.getElementById("chat-container");
+        const typingIndicator = document.getElementById("typing");
+        const userInput = document.getElementById("user-input");
+        const sendBtn = document.getElementById("send-btn");
+        const statusEl = document.getElementById("status");
+        const inputForm = document.getElementById("input-form");
+
+        const sessionId = crypto.randomUUID();
+        let ws = null;
+        let currentAssistantEl = null;
+        let currentText = "";
+        let waitingForResponse = false;
+
+        function setStatus(text, cls) {
+            statusEl.textContent = text;
+            statusEl.className = cls;
+        }
+
+        function scrollToBottom() {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Simple markdown-to-HTML converter
+        function renderMarkdown(text) {
+            let html = text
+                // Escape HTML first
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+
+            // Code blocks
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>");
+            html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+            // Tables
+            html = html.replace(/^(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)*)/gm, (match, headerRow, sepRow, bodyRows) => {
+                const headers = headerRow.split("|").filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join("");
+                const rows = bodyRows.trim().split("\n").map(row => {
+                    const cells = row.split("|").filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join("");
+                    return `<tr>${cells}</tr>`;
+                }).join("");
+                return `<table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
+            });
+
+            // Headers
+            html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+            html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+
+            // Horizontal rules
+            html = html.replace(/^---+$/gm, "<hr>");
+
+            // Blockquotes
+            html = html.replace(/^&gt; (.+)$/gm, "<blockquote>$1</blockquote>");
+
+            // Bold and italic
+            html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+            html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+
+            // Unordered lists
+            html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
+            html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, "<ul>$1</ul>");
+
+            // Numbered lists
+            html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+
+            // Line breaks (double newline = paragraph break)
+            html = html.replace(/\n\n/g, "<br><br>");
+            html = html.replace(/\n/g, "<br>");
+
+            return html;
+        }
+
+        function addMessage(role, content) {
+            const div = document.createElement("div");
+            div.className = `message ${role}`;
+            if (role === "assistant") {
+                div.innerHTML = renderMarkdown(content);
+            } else {
+                div.textContent = content;
+            }
+            chatContainer.insertBefore(div, typingIndicator);
+            scrollToBottom();
+            return div;
+        }
+
+        function addDownloadLink(filename, url) {
+            const div = document.createElement("div");
+            div.className = "message assistant";
+            div.innerHTML = `<strong>Profile ready for download:</strong><br>
+                <a class="download-link" href="${url}" download="${filename}">
+                    Download ${filename}
+                </a>`;
+            chatContainer.insertBefore(div, typingIndicator);
+            scrollToBottom();
+        }
+
+        function setInputEnabled(enabled) {
+            userInput.disabled = !enabled;
+            sendBtn.disabled = !enabled;
+            if (enabled) userInput.focus();
+        }
+
+        function connect() {
+            setStatus("Connecting...", "connecting");
+            const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+            ws = new WebSocket(`${protocol}//${location.host}/ws/${sessionId}`);
+
+            ws.onopen = () => {
+                setStatus("Connected", "connected");
+                setInputEnabled(false); // Wait for first agent message
+                waitingForResponse = true;
+                typingIndicator.classList.add("visible");
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === "text") {
+                    typingIndicator.classList.remove("visible");
+                    // Accumulate text into the current assistant message bubble
+                    if (!currentAssistantEl) {
+                        currentText = data.content;
+                        currentAssistantEl = addMessage("assistant", currentText);
+                    } else {
+                        currentText += "\n\n" + data.content;
+                        currentAssistantEl.innerHTML = renderMarkdown(currentText);
+                        scrollToBottom();
+                    }
+                } else if (data.type === "file_ready") {
+                    addDownloadLink(data.filename, data.download_url);
+                } else if (data.type === "done") {
+                    typingIndicator.classList.remove("visible");
+                    currentAssistantEl = null;
+                    currentText = "";
+                    waitingForResponse = false;
+                    setInputEnabled(true);
+                } else if (data.type === "error") {
+                    typingIndicator.classList.remove("visible");
+                    addMessage("system", "Error: " + data.content);
+                    waitingForResponse = false;
+                    setInputEnabled(true);
+                }
+            };
+
+            ws.onclose = () => {
+                setStatus("Disconnected", "error");
+                setInputEnabled(false);
+                addMessage("system", "Connection lost. Refresh the page to start a new session.");
+            };
+
+            ws.onerror = () => {
+                setStatus("Error", "error");
+            };
+        }
+
+        inputForm.addEventListener("submit", (e) => {
+            e.preventDefault();
+            const text = userInput.value.trim();
+            if (!text || waitingForResponse || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+            addMessage("user", text);
+            userInput.value = "";
+            waitingForResponse = true;
+            setInputEnabled(false);
+            typingIndicator.classList.add("visible");
+            scrollToBottom();
+
+            ws.send(JSON.stringify({ message: text }));
+        });
+
+        // Start connection
+        connect();
+    </script>
+</body>
+</html>
