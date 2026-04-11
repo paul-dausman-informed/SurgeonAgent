@@ -306,6 +306,23 @@ async def health():
     return {"status": "healthy", "active_sessions": len(sessions)}
 
 
+@app.get("/debug")
+async def debug():
+    """Debug endpoint to check environment and readiness."""
+    import shutil
+    return {
+        "status": "running",
+        "port": os.environ.get("PORT", "not set"),
+        "api_key_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "claude_cli_found": shutil.which("claude") is not None,
+        "node_version": os.popen("node --version 2>&1").read().strip(),
+        "python_version": sys.version,
+        "static_dir_exists": os.path.isdir(STATIC_DIR),
+        "static_files": os.listdir(STATIC_DIR) if os.path.isdir(STATIC_DIR) else [],
+        "csv_exists": os.path.isfile(os.path.join(BASE_DIR, "SurgeonScores", "NationalTop80Score.csv")),
+    }
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for multi-turn conversations."""
