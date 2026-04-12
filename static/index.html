@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1">
     <title>SurgeonAgent</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -11,8 +11,16 @@
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: #f0f2f5;
             height: 100vh;
+            height: 100dvh;              /* iOS Safari: use dynamic viewport height */
+            height: -webkit-fill-available; /* older iOS fallback */
             display: flex;
             flex-direction: column;
+            overflow: hidden;            /* prevent body scroll; only chat scrolls */
+        }
+
+        /* iOS Safari viewport fix */
+        html {
+            height: -webkit-fill-available;
         }
 
         header {
@@ -23,6 +31,7 @@
             align-items: center;
             gap: 12px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            flex-shrink: 0;
         }
 
         header h1 { font-size: 20px; font-weight: 600; }
@@ -182,6 +191,8 @@
             background: white;
             border-top: 1px solid #ddd;
             padding: 16px 24px;
+            padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+            flex-shrink: 0;
         }
 
         #input-form {
@@ -218,8 +229,14 @@
         #send-btn:disabled { background: #93b3cc; cursor: not-allowed; }
 
         @media (max-width: 600px) {
-            #chat-container { padding: 12px; }
-            .message { max-width: 92%; font-size: 14px; }
+            header { padding: 10px 16px; }
+            header h1 { font-size: 18px; }
+            header .subtitle { font-size: 12px; }
+            #chat-container { padding: 10px; gap: 10px; }
+            .message { max-width: 92%; font-size: 14px; padding: 10px 14px; }
+            #input-area { padding: 10px 12px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+            #user-input { padding: 10px 12px; font-size: 16px; /* 16px prevents iOS zoom on focus */ }
+            #send-btn { padding: 10px 18px; font-size: 14px; }
         }
     </style>
 </head>
@@ -416,6 +433,17 @@
 
             ws.send(JSON.stringify({ message: text }));
         });
+
+        // iOS Safari: handle virtual keyboard resizing the viewport
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener("resize", () => {
+                document.body.style.height = window.visualViewport.height + "px";
+                scrollToBottom();
+            });
+            window.visualViewport.addEventListener("scroll", () => {
+                document.body.style.height = window.visualViewport.height + "px";
+            });
+        }
 
         // Start connection
         connect();
