@@ -349,6 +349,24 @@ Gastric Bypass, Sleeve Gastrectomy, Lap Band Removal, Other Bariatrics, \
 Abdominal Hernia, Inguinal Hernia, Hiatal Hernia, Other Thoracic.
 """
 
+# Load business rules from rules/ directory
+RULES_DIR = os.path.join(BASE_DIR, "rules")
+if os.path.isdir(RULES_DIR):
+    _rules_parts = []
+    for _fname in sorted(os.listdir(RULES_DIR)):
+        if _fname.endswith(".md"):
+            with open(os.path.join(RULES_DIR, _fname), "r", encoding="utf-8") as _f:
+                _rules_parts.append(_f.read().strip())
+    if _rules_parts:
+        SYSTEM_PROMPT += f"""
+
+## Business Rules (MANDATORY — always follow these)
+The following rules are loaded from the rules/ directory and MUST be followed. \
+They override any conflicting default behavior.
+
+{chr(10).join(_rules_parts)}
+"""
+
 
 async def main():
     # Build the MCP server with all tools

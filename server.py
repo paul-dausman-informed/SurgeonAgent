@@ -222,7 +222,34 @@ def create_tools(session_output_dir: str):
 
 
 # ---------------------------------------------------------------------------
-# System prompt (same as agent.py)
+# Load business rules from markdown file
+# ---------------------------------------------------------------------------
+
+RULES_DIR = os.path.join(BASE_DIR, "rules")
+
+
+def _load_rules() -> str:
+    """Load all .md rule files from the rules/ directory."""
+    if not os.path.isdir(RULES_DIR):
+        return ""
+    rules_text = []
+    for fname in sorted(os.listdir(RULES_DIR)):
+        if fname.endswith(".md"):
+            fpath = os.path.join(RULES_DIR, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    rules_text.append(f.read().strip())
+            except Exception:
+                pass
+    return "\n\n".join(rules_text)
+
+
+BUSINESS_RULES = _load_rules()
+logger.info(f"Loaded business rules: {len(BUSINESS_RULES)} chars from {RULES_DIR}")
+
+
+# ---------------------------------------------------------------------------
+# System prompt
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
@@ -329,6 +356,17 @@ Hysterectomy (Benign/Malignant), Colon, Rectal, Prostatectomy, Lung Resection, \
 Pancreatectomy, Splenectomy, Appendectomy, Gastric Bypass, Sleeve Gastrectomy, \
 Lap Band Removal, Other Bariatrics, Abdominal Hernia, Inguinal Hernia, \
 Hiatal Hernia, Other Thoracic.
+"""
+
+# Append business rules to system prompt if they exist
+if BUSINESS_RULES:
+    SYSTEM_PROMPT += f"""
+
+## Business Rules (MANDATORY — always follow these)
+The following rules are loaded from the rules/ directory and MUST be followed. \
+They override any conflicting default behavior.
+
+{BUSINESS_RULES}
 """
 
 
