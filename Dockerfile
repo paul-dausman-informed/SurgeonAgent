@@ -28,6 +28,7 @@ COPY agent.py server.py start.py research.py profile_generator.py ./
 COPY static/ ./static/
 COPY SurgeonScores/ ./SurgeonScores/
 COPY NationalTop80Score.csv ./
+COPY cbsa_lookup.json ./
 COPY rules/ ./rules/
 
 # Create directories for runtime data

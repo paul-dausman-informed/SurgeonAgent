@@ -718,19 +718,94 @@ def list_surgery_wiki_topics() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Find Best Surgeon by City + Procedure
+# Find Best Surgeon by City + Procedure  (with CBSA metro-area matching)
 # ---------------------------------------------------------------------------
 
 SCORES_CSV_PATH = os.path.join(BASE_DIR, "SurgeonScores", "NationalTop80Score.csv")
+CBSA_LOOKUP_PATH = os.path.join(BASE_DIR, "cbsa_lookup.json")
+
+# Load CBSA lookup once at import time.
+# JSON structure: {"zips": {zip5: {code, title}}, "counties": {"name|ST": {code, title}}}
+_CBSA_ZIPS: dict = {}      # zip5 -> {"code": "16974", "title": "Chicago-..."}
+_CBSA_COUNTIES: dict = {}  # "tarrant county|TX" -> {"code": "19124", "title": "Dallas-..."}
+if os.path.exists(CBSA_LOOKUP_PATH):
+    try:
+        with open(CBSA_LOOKUP_PATH, "r", encoding="utf-8") as _f:
+            _cbsa_data = json.load(_f)
+            _CBSA_ZIPS = _cbsa_data.get("zips", _cbsa_data)  # backwards compat
+            _CBSA_COUNTIES = _cbsa_data.get("counties", {})
+    except Exception:
+        pass
+
+
+def _get_cbsa_code(zip5: str) -> str:
+    """Return the CBSA code for a 5-digit ZIP, or '' if not in a metro area."""
+    entry = _CBSA_ZIPS.get(zip5[:5])
+    return entry["code"] if entry else ""
+
+
+def _get_cbsa_title(zip5: str) -> str:
+    """Return the CBSA metro area name for a ZIP, or '' if unknown."""
+    entry = _CBSA_ZIPS.get(zip5[:5])
+    return entry["title"] if entry else ""
+
+
+def _geocode_city_to_cbsa(city: str, state: str) -> tuple:
+    """Geocode a city/state and find its CBSA via county name from Nominatim.
+
+    Returns (cbsa_code, cbsa_title) or ('', '').
+    Nominatim returns the county for city-level queries, which we then
+    match against our county-to-CBSA lookup.
+    """
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        "q": f"{city}, {state}, USA",
+        "format": "json",
+        "addressdetails": 1,
+        "limit": 1,
+    }
+    try:
+        resp = requests.get(
+            url, params=params,
+            headers={"User-Agent": "SurgeonAgent/1.0"},
+            timeout=10,
+        )
+        data = resp.json()
+        if data and "address" in data[0]:
+            addr = data[0]["address"]
+
+            # Try county name lookup (most reliable for city-level queries)
+            county = addr.get("county", "")
+            state_abbr = state.upper().strip()
+            if county and state_abbr and _CBSA_COUNTIES:
+                key = f"{county.lower()}|{state_abbr}"
+                entry = _CBSA_COUNTIES.get(key)
+                if entry:
+                    return entry["code"], entry["title"]
+
+            # Fallback: try postcode if available (specific address queries)
+            postcode = addr.get("postcode", "")
+            if postcode:
+                zip5 = postcode.split("-")[0].split(":")[0].strip()[:5]
+                code = _get_cbsa_code(zip5)
+                if code:
+                    return code, _get_cbsa_title(zip5)
+    except Exception:
+        pass
+    return "", ""
 
 
 def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5) -> dict:
     """Find the top-scoring surgeons for a procedure near a given city.
 
-    Searches the SurgeonScores/NationalTop80Score.csv for surgeons matching
-    the city (and optionally state) and procedure, ranked by Informed Score.
+    Search priority (CBSA-aware):
+      1. Exact city match (surgeons physically in the named city)
+      2. CBSA / metro-area match (same metropolitan statistical area)
+      3. State-wide fallback (only if no CBSA results)
 
-    Returns {"results": [...], "procedure_matched": str, "city_matched": str}.
+    Within each tier, surgeons are ranked by Informed Score (highest first).
+    Returns {"results": [...], "procedure_matched": str, "city_matched": str,
+             "search_scope": str}.
     """
     if not os.path.exists(SCORES_CSV_PATH):
         return {"results": [], "procedure_matched": "", "city_matched": "",
@@ -740,7 +815,9 @@ def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5
     state_upper = state.upper().strip()
     proc_lower = procedure.lower().strip()
 
+    # ------------------------------------------------------------------
     # Read all rows and find matching procedure name (fuzzy)
+    # ------------------------------------------------------------------
     all_rows = []
     procedure_names = set()
     with open(SCORES_CSV_PATH, newline="", encoding="utf-8") as f:
@@ -763,7 +840,6 @@ def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5
                 matched_proc = p
                 break
     if not matched_proc:
-        # Word-level matching
         proc_words = proc_lower.split()
         best_p, best_score = None, 0
         for p in procedure_names:
@@ -784,47 +860,102 @@ def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5
             "error": f"No matching procedure found for '{procedure}'",
         }
 
-    # Filter rows by procedure, then by city (and state if provided)
+    # ------------------------------------------------------------------
+    # Filter rows by procedure
+    # ------------------------------------------------------------------
     proc_rows = [r for r in all_rows if r["Procedure"].strip() == matched_proc]
 
-    # Match city — try facility city first, then expand to state
-    city_matches = []
+    # ------------------------------------------------------------------
+    # Tier 1: Exact city match
+    # ------------------------------------------------------------------
+    exact_city_rows = []
     for row in proc_rows:
         row_city = row.get("City", "").strip().lower()
         row_state = row.get("State", "").strip().upper()
         if row_city == city_lower:
             if not state_upper or row_state == state_upper:
-                city_matches.append(row)
+                exact_city_rows.append(row)
 
-    matched_city = city
-    # If no exact city match, try state-level search
-    if not city_matches and state_upper:
-        for row in proc_rows:
-            row_state = row.get("State", "").strip().upper()
-            if row_state == state_upper:
-                city_matches.append(row)
-        if city_matches:
-            matched_city = f"{state_upper} (state-wide, no exact city match for '{city}')"
+    # ------------------------------------------------------------------
+    # Tier 2: CBSA / metro-area match
+    # Identify the target CBSA by finding a ZIP in the CSV for the target
+    # city, then pull all surgeons whose facility ZIP is in the same CBSA.
+    # ------------------------------------------------------------------
+    cbsa_rows = []
+    target_cbsa_code = ""
+    target_cbsa_title = ""
+    search_scope = "exact_city"
 
-    if not city_matches:
-        # Collect available cities for this procedure
-        available_cities = sorted(set(
-            f"{r['City'].strip().title()}, {r['State'].strip()}"
-            for r in proc_rows if r["City"].strip()
-        ))
-        return {
-            "results": [],
-            "procedure_matched": matched_proc,
-            "city_matched": "",
-            "nearby_cities": available_cities[:20],
-            "error": f"No surgeons found for '{matched_proc}' in {city}"
-                     + (f", {state_upper}" if state_upper else ""),
-        }
+    if _CBSA_ZIPS:
+        # Strategy A: Find CBSA code from a CSV row in the target city
+        for row in exact_city_rows:
+            row_zip = row.get("Zip", "").strip()[:5]
+            target_cbsa_code = _get_cbsa_code(row_zip)
+            if target_cbsa_code:
+                target_cbsa_title = _get_cbsa_title(row_zip)
+                break
 
-    # Deduplicate by NPI (a surgeon may appear at multiple facilities)
-    # Keep the row with the highest Informed Score per NPI
+        # Strategy B: If the city isn't in the CSV (or has no CBSA),
+        # geocode the city to find its county, then look up its CBSA.
+        # This handles suburbs and cities not represented in the data.
+        if not target_cbsa_code and state_upper:
+            target_cbsa_code, target_cbsa_title = _geocode_city_to_cbsa(city, state_upper)
+
+        # If we found a CBSA, gather all surgeons in that metro area
+        if target_cbsa_code:
+            for row in proc_rows:
+                row_zip = row.get("Zip", "").strip()[:5]
+                if _get_cbsa_code(row_zip) == target_cbsa_code:
+                    cbsa_rows.append(row)
+
+    # ------------------------------------------------------------------
+    # Decide which pool to rank from
+    # Priority: exact city first; if not enough, use full CBSA pool;
+    # if still empty, fall back to state-wide.
+    # ------------------------------------------------------------------
+    if exact_city_rows:
+        candidate_rows = exact_city_rows
+        matched_city = city
+        search_scope = "exact_city"
+        # If we also have broader CBSA rows, note that for the response
+        cbsa_extra_count = len(set(r["NPI"] for r in cbsa_rows)) - len(set(r["NPI"] for r in exact_city_rows)) if cbsa_rows else 0
+    elif cbsa_rows:
+        candidate_rows = cbsa_rows
+        matched_city = f"{city} metro area ({target_cbsa_title})"
+        search_scope = "cbsa"
+        cbsa_extra_count = 0
+    else:
+        # Tier 3: State-wide fallback
+        candidate_rows = []
+        if state_upper:
+            for row in proc_rows:
+                row_state = row.get("State", "").strip().upper()
+                if row_state == state_upper:
+                    candidate_rows.append(row)
+        if candidate_rows:
+            matched_city = f"{state_upper} (state-wide, no results in {city} metro area)"
+            search_scope = "state"
+            cbsa_extra_count = 0
+        else:
+            available_cities = sorted(set(
+                f"{r['City'].strip().title()}, {r['State'].strip()}"
+                for r in proc_rows if r["City"].strip()
+            ))
+            return {
+                "results": [],
+                "procedure_matched": matched_proc,
+                "city_matched": "",
+                "search_scope": "none",
+                "nearby_cities": available_cities[:20],
+                "error": f"No surgeons found for '{matched_proc}' in {city}"
+                         + (f", {state_upper}" if state_upper else ""),
+            }
+
+    # ------------------------------------------------------------------
+    # Deduplicate by NPI — keep the row with the highest Informed Score
+    # ------------------------------------------------------------------
     by_npi = {}
-    for row in city_matches:
+    for row in candidate_rows:
         npi = row["NPI"]
         try:
             score = int(row.get("Informed Score", "0"))
@@ -836,13 +967,15 @@ def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5
     # Sort by Informed Score descending
     ranked = sorted(by_npi.values(), key=lambda r: r["_score"], reverse=True)
 
+    # ------------------------------------------------------------------
+    # Build result list
+    # ------------------------------------------------------------------
     results = []
     for row in ranked[:top_n]:
-        # Collect all facilities for this surgeon
         npi = row["NPI"]
         facilities = sorted(set(
             r["Facility Name"].strip().title()
-            for r in city_matches if r["NPI"] == npi and r["Facility Name"].strip()
+            for r in candidate_rows if r["NPI"] == npi and r["Facility Name"].strip()
         ))
         try:
             comp_free = f"{float(row['prop_complication_free_surgeon']):.1%}"
@@ -856,6 +989,10 @@ def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5
             los = f"{float(row['los_elective']):.2f} days"
         except (ValueError, KeyError):
             los = ""
+
+        row_city = row.get("City", "").strip().title()
+        row_state = row.get("State", "").strip()
+        in_target_city = (row_city.lower() == city_lower)
 
         results.append({
             "npi": npi,
@@ -871,16 +1008,26 @@ def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5
             "avg_90_day_cost": cost,
             "length_of_stay": los,
             "facilities": facilities,
-            "city": row.get("City", "").strip().title(),
-            "state": row.get("State", "").strip(),
+            "city": row_city,
+            "state": row_state,
             "medical_school": row.get("Medical School", "").strip().title(),
+            "in_target_city": in_target_city,
         })
 
-    return {
+    response = {
         "results": results,
         "procedure_matched": matched_proc,
         "city_matched": matched_city,
+        "search_scope": search_scope,
     }
+    if target_cbsa_code:
+        response["cbsa_code"] = target_cbsa_code
+        response["cbsa_title"] = target_cbsa_title
+    if search_scope == "exact_city" and cbsa_extra_count > 0:
+        response["cbsa_additional_surgeons"] = cbsa_extra_count
+        response["cbsa_title"] = target_cbsa_title
+
+    return response
 
 
 # ---------------------------------------------------------------------------
