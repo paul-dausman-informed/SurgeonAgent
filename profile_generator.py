@@ -338,26 +338,65 @@ def generate_profile(profile_data: dict, output_dir: str = None) -> str:
     else:
         display_name = full_name
 
-    # Education
-    education_items = list(d.get("education", []))
+    # Education — agent may use "education", "education_and_training", or "training"
+    education_items = list(
+        d.get("education", [])
+        or d.get("education_and_training", [])
+        or d.get("training", [])
+    )
+    # Also check for medical_school from CSV data
+    med_school = d.get("medical_school", "")
+    if med_school and not any(med_school.lower() in e.lower() for e in education_items):
+        education_items.insert(0, f"Medical School: {med_school}")
+    residency = d.get("residency", "")
+    if residency and not any("residency" in e.lower() for e in education_items):
+        education_items.append(f"Residency: {residency}")
+    fellowship = d.get("fellowship", "")
+    if fellowship and not any("fellowship" in e.lower() for e in education_items):
+        education_items.append(f"Fellowship: {fellowship}")
 
-    # Board certs
-    board_certs = d.get("board_certs", [])
+    # Board certs — agent may use "board_certs", "board_certifications", or "certifications"
+    board_certs = (
+        d.get("board_certs", [])
+        or d.get("board_certifications", [])
+        or d.get("certifications", [])
+    )
     if not board_certs:
         board_certs = [f"{credential} - {specialty}"]
 
     # Memberships
-    memberships = list(d.get("memberships", []))
+    memberships = list(
+        d.get("memberships", [])
+        or d.get("professional_memberships", [])
+    )
     if not memberships:
         memberships = list(SPECIALTY_MEMBERSHIPS.get(specialty, []))
     if not any("american medical association" in m.lower() for m in memberships):
         memberships.append("American Medical Association (AMA)")
 
-    # Affiliations
-    affiliations = d.get("affiliations", [])
+    # Affiliations — agent may use "affiliations", "hospital_affiliations", or "hospitals"
+    affiliations = (
+        d.get("affiliations", [])
+        or d.get("hospital_affiliations", [])
+        or d.get("hospitals", [])
+    )
+    # Also pull facilities from CSV data if affiliations is empty
+    if not affiliations:
+        facilities = d.get("facilities", [])
+        if facilities:
+            affiliations = [
+                {"name": f.get("name", f) if isinstance(f, dict) else str(f),
+                 "city": f.get("city", "") if isinstance(f, dict) else "",
+                 "state": f.get("state", "") if isinstance(f, dict) else ""}
+                for f in facilities
+            ]
 
-    # Ratings
-    ratings = list(d.get("ratings", []))
+    # Ratings — agent may use "ratings", "reviews", or "patient_ratings"
+    ratings = list(
+        d.get("ratings", [])
+        or d.get("reviews", [])
+        or d.get("patient_ratings", [])
+    )
     platform_names = {r.get("platform", "").lower() for r in ratings}
     if "healthgrades" not in platform_names:
         ratings.append({"platform": "Healthgrades", "rating": "See Profile",
@@ -372,20 +411,47 @@ def generate_profile(profile_data: dict, output_dir: str = None) -> str:
         ratings.append({"platform": "Doximity", "rating": "Listed",
                         "notes": f"{specialty} specialist profile"})
 
-    # Awards
-    awards = list(d.get("awards", []))
+    # Awards — agent may use "awards", "awards_and_recognitions", or "recognitions"
+    awards = list(
+        d.get("awards", [])
+        or d.get("awards_and_recognitions", [])
+        or d.get("recognitions", [])
+    )
 
-    # Procedures
-    procedures = d.get("procedures", [])
+    # Procedures — agent may use "procedures", "surgical_performance", or "performance_metrics"
+    procedures = (
+        d.get("procedures", [])
+        or d.get("surgical_performance", [])
+        or d.get("performance_metrics", [])
+        or d.get("surgical_performance_metrics", [])
+    )
 
     # Languages
     languages = d.get("languages", ["English"])
 
-    # Sources
-    source_urls = d.get("source_urls", [])
+    # Sources — agent may use "source_urls", "sources", or "citations"
+    source_urls = (
+        d.get("source_urls", [])
+        or d.get("sources", [])
+        or d.get("citations", [])
+        or d.get("references", [])
+    )
 
-    # Biography
-    biography = d.get("description", "")
+    # da Vinci status — agent may nest it differently
+    if d.get("davinci_status") is None:
+        # Check alternate key names
+        for key in ("da_vinci_status", "davinci", "da_vinci", "robotic_surgery"):
+            if d.get(key) is not None:
+                d["davinci_status"] = d[key]
+                break
+
+    # Biography — agent may use "description", "biography", or "bio"
+    biography = (
+        d.get("description", "")
+        or d.get("biography", "")
+        or d.get("bio", "")
+        or d.get("professional_biography", "")
+    )
     if not biography:
         biography = f"{display_name} is a {specialty.lower()} specialist practicing in {city}, {state}."
 
