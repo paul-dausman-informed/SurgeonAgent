@@ -8,6 +8,7 @@ Run locally:  uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 """
 
 import asyncio
+from collections import defaultdict
 import json
 import logging
 import os
@@ -31,9 +32,10 @@ logger.info("Starting SurgeonAgent server...")
 logger.info(f"PORT={os.environ.get('PORT', 'not set')}")
 logger.info(f"ANTHROPIC_API_KEY={'set' if os.environ.get('ANTHROPIC_API_KEY') else 'NOT SET'}")
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 logger.info("FastAPI imported OK")
 
 try:
@@ -70,12 +72,129 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 SESSION_OUTPUT_BASE = os.path.join(BASE_DIR, "output")
 
+
+# ---------------------------------------------------------------------------
+# Rate limiter  (IP-based, in-memory)
+# ---------------------------------------------------------------------------
+
+class RateLimiter:
+    """Sliding-window rate limiter keyed by IP address.
+
+    Limits:
+      - CONNECTIONS_PER_HOUR:  max WebSocket sessions one IP can open per hour
+      - MAX_CONCURRENT:        max simultaneous active sessions per IP
+      - MESSAGES_PER_SESSION:  max user messages within one WebSocket session
+      - HTTP_REQUESTS_PER_MIN: max HTTP requests (download, debug) per minute
+    """
+
+    CONNECTIONS_PER_HOUR = int(os.environ.get("RATE_LIMIT_CONNECTIONS", "10"))
+    MAX_CONCURRENT = int(os.environ.get("RATE_LIMIT_CONCURRENT", "3"))
+    MESSAGES_PER_SESSION = int(os.environ.get("RATE_LIMIT_MESSAGES", "60"))
+    HTTP_REQUESTS_PER_MIN = int(os.environ.get("RATE_LIMIT_HTTP", "30"))
+
+    def __init__(self):
+        self._ws_timestamps: dict[str, list[float]] = defaultdict(list)
+        self._active_sessions: dict[str, set[str]] = defaultdict(set)
+        self._msg_counts: dict[str, int] = {}          # session_id -> count
+        self._http_timestamps: dict[str, list[float]] = defaultdict(list)
+
+    # -- helpers --
+
+    @staticmethod
+    def _prune(timestamps: list[float], window_seconds: float) -> list[float]:
+        cutoff = time.time() - window_seconds
+        return [t for t in timestamps if t > cutoff]
+
+    # -- WebSocket guards --
+
+    def check_ws_connect(self, ip: str, session_id: str) -> str | None:
+        """Return an error message if the connection should be rejected, else None."""
+        # Prune old entries
+        self._ws_timestamps[ip] = self._prune(self._ws_timestamps[ip], 3600)
+
+        if len(self._ws_timestamps[ip]) >= self.CONNECTIONS_PER_HOUR:
+            logger.warning(f"Rate limit: {ip} exceeded {self.CONNECTIONS_PER_HOUR} connections/hour")
+            return "Rate limit exceeded. Please try again later."
+
+        if len(self._active_sessions[ip]) >= self.MAX_CONCURRENT:
+            logger.warning(f"Rate limit: {ip} has {len(self._active_sessions[ip])} concurrent sessions")
+            return "Too many active sessions. Please close an existing session first."
+
+        # Record connection
+        self._ws_timestamps[ip].append(time.time())
+        self._active_sessions[ip].add(session_id)
+        self._msg_counts[session_id] = 0
+        return None
+
+    def check_ws_message(self, session_id: str) -> str | None:
+        """Return an error if this session has sent too many messages, else None."""
+        count = self._msg_counts.get(session_id, 0) + 1
+        self._msg_counts[session_id] = count
+        if count > self.MESSAGES_PER_SESSION:
+            logger.warning(f"Rate limit: session {session_id[:8]}... exceeded {self.MESSAGES_PER_SESSION} messages")
+            return "Message limit reached for this session. Please start a new session."
+        return None
+
+    def release_ws(self, ip: str, session_id: str):
+        """Called when a WebSocket disconnects."""
+        self._active_sessions[ip].discard(session_id)
+        if not self._active_sessions[ip]:
+            del self._active_sessions[ip]
+        self._msg_counts.pop(session_id, None)
+
+    # -- HTTP guards --
+
+    def check_http(self, ip: str) -> bool:
+        """Return True if the request is allowed, False if rate-limited."""
+        self._http_timestamps[ip] = self._prune(self._http_timestamps[ip], 60)
+        if len(self._http_timestamps[ip]) >= self.HTTP_REQUESTS_PER_MIN:
+            logger.warning(f"Rate limit: {ip} exceeded {self.HTTP_REQUESTS_PER_MIN} HTTP requests/min")
+            return False
+        self._http_timestamps[ip].append(time.time())
+        return True
+
+    def cleanup(self):
+        """Periodic housekeeping — remove stale entries."""
+        now = time.time()
+        stale_ips = [ip for ip, ts in self._ws_timestamps.items()
+                     if not self._prune(ts, 3600)]
+        for ip in stale_ips:
+            del self._ws_timestamps[ip]
+        stale_http = [ip for ip, ts in self._http_timestamps.items()
+                      if not self._prune(ts, 60)]
+        for ip in stale_http:
+            del self._http_timestamps[ip]
+
+
+rate_limiter = RateLimiter()
+
+logger.info(
+    f"Rate limits: {rate_limiter.CONNECTIONS_PER_HOUR} conn/hr, "
+    f"{rate_limiter.MAX_CONCURRENT} concurrent, "
+    f"{rate_limiter.MESSAGES_PER_SESSION} msg/session, "
+    f"{rate_limiter.HTTP_REQUESTS_PER_MIN} HTTP/min"
+)
+
+
+def _get_client_ip(websocket_or_request) -> str:
+    """Extract client IP, respecting X-Forwarded-For from Railway's proxy."""
+    forwarded = None
+    if hasattr(websocket_or_request, "headers"):
+        forwarded = websocket_or_request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    client = getattr(websocket_or_request, "client", None)
+    if client:
+        return client.host
+    return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
 
 sessions: dict[str, dict] = {}
-# Each session: {"client": ClaudeSDKClient, "output_dir": str, "last_active": float}
+# Each session: {"client": ClaudeSDKClient, "output_dir": str, "last_active": float, "ip": str}
 
 SESSION_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
 
@@ -413,6 +532,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for multi-turn conversations."""
     await websocket.accept()
 
+    # --- Rate limiting ---
+    client_ip = _get_client_ip(websocket)
+    reject_reason = rate_limiter.check_ws_connect(client_ip, session_id)
+    if reject_reason:
+        await websocket.send_json({"type": "error", "content": reject_reason})
+        await websocket.close(code=1008, reason="Rate limited")
+        return
+
     # Create per-session output directory
     session_output_dir = os.path.join(SESSION_OUTPUT_BASE, session_id)
     os.makedirs(session_output_dir, exist_ok=True)
@@ -447,6 +574,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 "client": client,
                 "output_dir": session_output_dir,
                 "last_active": time.time(),
+                "ip": client_ip,
             }
 
             # Send initial greeting prompt
@@ -480,6 +608,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 if not user_message.strip():
                     continue
 
+                # --- Per-message rate limit ---
+                msg_reject = rate_limiter.check_ws_message(session_id)
+                if msg_reject:
+                    await websocket.send_json({"type": "error", "content": msg_reject})
+                    await websocket.send_json({"type": "done", "stop_reason": "rate_limited"})
+                    continue
+
                 sessions[session_id]["last_active"] = time.time()
 
                 await client.query(user_message)
@@ -507,6 +642,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             pass
     finally:
         sessions.pop(session_id, None)
+        rate_limiter.release_ws(client_ip, session_id)
 
 
 async def _notify_downloads(websocket: WebSocket, session_id: str, output_dir: str):
@@ -523,8 +659,12 @@ async def _notify_downloads(websocket: WebSocket, session_id: str, output_dir: s
 
 
 @app.get("/download/{session_id}/{filename}")
-async def download_file(session_id: str, filename: str):
+async def download_file(session_id: str, filename: str, request: Request):
     """Serve generated .docx files for download."""
+    client_ip = _get_client_ip(request)
+    if not rate_limiter.check_http(client_ip):
+        return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
+
     # Sanitize to prevent directory traversal
     safe_filename = os.path.basename(filename)
     filepath = os.path.join(SESSION_OUTPUT_BASE, session_id, safe_filename)
@@ -549,6 +689,7 @@ async def _cleanup_loop():
     while True:
         await asyncio.sleep(300)  # Check every 5 minutes
         now = time.time()
+        rate_limiter.cleanup()
         expired = [
             sid for sid, info in sessions.items()
             if now - info["last_active"] > SESSION_TIMEOUT_SECONDS
@@ -556,6 +697,9 @@ async def _cleanup_loop():
         for sid in expired:
             info = sessions.pop(sid, None)
             if info:
+                # Release rate limiter slot
+                ip = info.get("ip", "unknown")
+                rate_limiter.release_ws(ip, sid)
                 # Clean up output files
                 out_dir = info.get("output_dir", "")
                 if os.path.isdir(out_dir):
