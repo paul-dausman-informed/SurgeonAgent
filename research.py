@@ -584,7 +584,10 @@ def lookup_csv(npi: str) -> dict | None:
             "length_of_stay": "",
         }
         try:
-            proc["complication_free_rate"] = f"{float(row['prop_complication_free_surgeon']):.1%}"
+            cf = int(row['Complication Free'])
+            total = int(row['Cases'])
+            if total > 0:
+                proc["complication_free_rate"] = f"{cf / total:.1%}"
         except (ValueError, KeyError):
             pass
         try:
@@ -978,7 +981,9 @@ def find_best_surgeon(city: str, procedure: str, state: str = "", top_n: int = 5
             for r in candidate_rows if r["NPI"] == npi and r["Facility Name"].strip()
         ))
         try:
-            comp_free = f"{float(row['prop_complication_free_surgeon']):.1%}"
+            cf = int(row['Complication Free'])
+            total = int(row['Cases'])
+            comp_free = f"{cf / total:.1%}" if total > 0 else ""
         except (ValueError, KeyError):
             comp_free = ""
         try:
