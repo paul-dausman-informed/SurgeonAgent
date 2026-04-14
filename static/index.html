@@ -334,6 +334,62 @@
             transform: none;
         }
 
+        /* ---- Procedure selector ---- */
+        .procedure-selector {
+            align-self: stretch;
+            max-width: 80%;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .procedure-selector .selector-header {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            font-style: italic;
+        }
+
+        .procedure-category {
+            margin-bottom: 10px;
+        }
+
+        .procedure-category .category-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+
+        .procedure-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .procedure-chip {
+            padding: 7px 14px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+        }
+
+        .procedure-chip:hover {
+            background: rgba(0, 212, 255, 0.1);
+            border-color: var(--cyan);
+            color: var(--cyan);
+            transform: translateY(-1px);
+        }
+
+        .procedure-chip:active {
+            transform: translateY(0);
+        }
+
         /* ---- Mobile ---- */
         @media (max-width: 600px) {
             header { padding: 10px 14px; gap: 10px; }
@@ -346,6 +402,9 @@
             #input-area { padding: 10px 12px; padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
             #user-input { padding: 10px 12px; font-size: 16px; }
             #send-btn { padding: 10px 18px; font-size: 14px; }
+            .procedure-selector { max-width: 92%; }
+            .procedure-chip { font-size: 12px; padding: 6px 11px; }
+            .procedure-category .category-label { font-size: 10px; }
         }
     </style>
 </head>
@@ -386,6 +445,89 @@
         let currentAssistantEl = null;
         let currentText = "";
         let waitingForResponse = false;
+        let procedureSelectorShown = false;
+        let isFirstTurn = true;
+
+        // Procedure categories for clickable chips
+        const procedureCategories = [
+            { label: "Orthopedic", procedures: ["Knee Replacement", "Hip Replacement"] },
+            { label: "General Surgery", procedures: ["Cholecystectomy", "Appendectomy", "Splenectomy", "Pancreatectomy"] },
+            { label: "Hernia", procedures: ["Abdominal Hernia", "Inguinal Hernia", "Hiatal Hernia"] },
+            { label: "Bariatric", procedures: ["Gastric Bypass", "Sleeve Gastrectomy", "Lap Band Removal", "Other Bariatrics"] },
+            { label: "Gynecologic", procedures: ["Hysterectomy - Benign", "Hysterectomy - Malignant"] },
+            { label: "Colorectal", procedures: ["Colon", "Rectal"] },
+            { label: "Thoracic", procedures: ["Lung Resection", "Other Thoracic"] },
+            { label: "Urologic", procedures: ["Prostatectomy"] },
+        ];
+
+        function showProcedureSelector() {
+            if (procedureSelectorShown) return;
+            procedureSelectorShown = true;
+
+            const container = document.createElement("div");
+            container.className = "procedure-selector";
+            container.id = "procedure-selector";
+
+            const header = document.createElement("div");
+            header.className = "selector-header";
+            header.textContent = "Select a procedure below, or type your own:";
+            container.appendChild(header);
+
+            procedureCategories.forEach(cat => {
+                const catDiv = document.createElement("div");
+                catDiv.className = "procedure-category";
+
+                const label = document.createElement("div");
+                label.className = "category-label";
+                label.textContent = cat.label;
+                catDiv.appendChild(label);
+
+                const chips = document.createElement("div");
+                chips.className = "procedure-chips";
+
+                cat.procedures.forEach(proc => {
+                    const chip = document.createElement("button");
+                    chip.className = "procedure-chip";
+                    chip.textContent = proc;
+                    chip.type = "button";
+                    chip.addEventListener("click", () => selectProcedure(proc));
+                    chips.appendChild(chip);
+                });
+
+                catDiv.appendChild(chips);
+                container.appendChild(catDiv);
+            });
+
+            chatContainer.insertBefore(container, typingIndicator);
+            scrollToBottom();
+        }
+
+        function selectProcedure(procedureName) {
+            if (waitingForResponse || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+            // Remove the selector
+            hideProcedureSelector();
+
+            // Send as a regular message
+            addMessage("user", procedureName);
+            userInput.value = "";
+            waitingForResponse = true;
+            setInputEnabled(false);
+            typingIndicator.classList.add("visible");
+            scrollToBottom();
+
+            ws.send(JSON.stringify({ message: procedureName }));
+        }
+
+        function hideProcedureSelector() {
+            const sel = document.getElementById("procedure-selector");
+            if (sel) {
+                sel.style.opacity = "0";
+                sel.style.transform = "translateY(-6px)";
+                sel.style.transition = "opacity 0.2s, transform 0.2s";
+                setTimeout(() => sel.remove(), 200);
+            }
+        }
 
         function setStatus(text, cls) {
             statusEl.textContent = text;
@@ -508,6 +650,12 @@
                     currentText = "";
                     waitingForResponse = false;
                     setInputEnabled(true);
+
+                    // Show procedure chips after the agent's first greeting
+                    if (isFirstTurn) {
+                        isFirstTurn = false;
+                        showProcedureSelector();
+                    }
                 } else if (data.type === "error") {
                     typingIndicator.classList.remove("visible");
                     addMessage("system", "Error: " + data.content);
@@ -531,6 +679,9 @@
             e.preventDefault();
             const text = userInput.value.trim();
             if (!text || waitingForResponse || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+            // Hide procedure selector if user types manually
+            hideProcedureSelector();
 
             addMessage("user", text);
             userInput.value = "";

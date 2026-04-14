@@ -316,6 +316,9 @@ and wait for the user's response before proceeding.
 
 ### Step 1: Identify the Surgery
 - Ask the user: "What type of surgery have you been told you need?"
+- NOTE: The user interface displays clickable procedure buttons below your \
+greeting. The user may click one of those buttons or type their own procedure. \
+Either way, treat their response the same.
 - Once they answer, confirm the name of the surgery.
 - Use the `lookup_surgery_info` tool to check the Surgery wiki knowledge base \
 for information about this procedure.
