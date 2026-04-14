@@ -66,6 +66,7 @@ from research import (
     save_cache,
 )
 from profile_generator import generate_profile
+from summary_generator import generate_consultation_summary as _generate_summary
 logger.info("All imports complete")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -341,6 +342,29 @@ def create_tools(session_output_dir: str):
         except Exception as e:
             return {"content": [{"type": "text", "text": f"Error generating profile: {e}"}]}
 
+    @tool(
+        "generate_consultation_summary",
+        "Generate a branded PDF summarizing this consultation. Includes: procedure "
+        "overview, recommended surgeon details, top 5 surgeons comparison grid, and "
+        "a 'Questions for Your Surgeon' worksheet. Pass all data as a JSON string.",
+        {"summary_data_json": str},
+    )
+    async def generate_summary_tool(args):
+        try:
+            summary_data = json.loads(args["summary_data_json"])
+        except json.JSONDecodeError as e:
+            return {"content": [{"type": "text", "text": f"Invalid JSON: {e}"}]}
+        try:
+            filepath = _generate_summary(summary_data, output_dir=session_output_dir)
+            filename = os.path.basename(filepath)
+            return {"content": [{"type": "text", "text": (
+                f"Consultation summary PDF generated!\n"
+                f"Saved to: {filepath}\n"
+                f"Download filename: {filename}"
+            )}]}
+        except Exception as e:
+            return {"content": [{"type": "text", "text": f"Error generating summary: {e}"}]}
+
     return [
         lookup_surgery_info_tool,
         find_best_surgeon_tool,
@@ -350,6 +374,7 @@ def create_tools(session_output_dir: str):
         check_davinci_tool,
         research_surgeon_tool,
         generate_profile_tool,
+        generate_summary_tool,
     ]
 
 
@@ -558,6 +583,45 @@ CRITICAL RULES for profile generation:
 - NEVER omit a key — include it with an empty value if no data was found
 - ALWAYS merge data from ALL tool calls into one complete JSON before generating
 
+### Step 6: Offer Consultation Summary
+After the surgeon profile has been generated (or if the user declines a profile), \
+ask the user:
+"Would you like me to generate a Consultation Summary document? It will include \
+a summary of the procedure we discussed, the surgeon recommendation, a comparison \
+of the top surgeons, and a worksheet of questions to bring to your appointment."
+
+If they say yes, call `generate_consultation_summary` with a JSON object containing:
+```json
+{
+  "procedure_name": "Cholecystectomy (Gallbladder Removal)",
+  "procedure_description": "A 2-3 sentence summary of the procedure...",
+  "patient_city": "Dallas",
+  "patient_state": "TX",
+  "recommended_surgeon": {
+    "name": "John Smith",
+    "credential": "M.D.",
+    "specialty": "General Surgery",
+    "informed_score": 95,
+    "cases": "506",
+    "complication_free_rate": "98.2%",
+    "avg_90_day_cost": "$12,450",
+    "city": "Dallas",
+    "state": "TX",
+    "medical_school": "University Of Texas Southwestern",
+    "facilities": ["Baylor University Medical Center"],
+    "davinci_status": {"listed": true, "details": "..."}
+  },
+  "top_surgeons": [
+    {"name": "...", "informed_score": 95, "cases": "506",
+     "complication_free_rate": "98.2%", "avg_90_day_cost": "$12,450",
+     "facilities": ["..."]}
+  ]
+}
+```
+IMPORTANT: The `top_surgeons` list should include ALL surgeons from Step 4 \
+(up to 5), including the recommended surgeon. Use the data you already have \
+from the `find_best_surgeon` results — do NOT re-query.
+
 ## Important Rules
 - Be warm, professional, and patient-centered.
 - NEVER provide medical diagnoses or treatment recommendations.
@@ -652,6 +716,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             "mcp__surgeon-tools__check_davinci_listing",
             "mcp__surgeon-tools__research_surgeon",
             "mcp__surgeon-tools__generate_surgeon_profile",
+            "mcp__surgeon-tools__generate_consultation_summary",
         ],
         permission_mode="acceptEdits",
         max_turns=50,
@@ -738,11 +803,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
 
 async def _notify_downloads(websocket: WebSocket, session_id: str, output_dir: str):
-    """Check output dir for new .docx files and notify the client."""
+    """Check output dir for new .docx / .pdf files and notify the client."""
     if not os.path.isdir(output_dir):
         return
     for fname in os.listdir(output_dir):
-        if fname.endswith(".docx"):
+        if fname.endswith(".docx") or fname.endswith(".pdf"):
             await websocket.send_json({
                 "type": "file_ready",
                 "filename": fname,
@@ -752,7 +817,7 @@ async def _notify_downloads(websocket: WebSocket, session_id: str, output_dir: s
 
 @app.get("/download/{session_id}/{filename}")
 async def download_file(session_id: str, filename: str, request: Request):
-    """Serve generated .docx files for download."""
+    """Serve generated .docx / .pdf files for download."""
     client_ip = _get_client_ip(request)
     if not rate_limiter.check_http(client_ip):
         return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
