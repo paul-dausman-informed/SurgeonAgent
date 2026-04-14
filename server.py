@@ -294,6 +294,18 @@ def create_tools(session_output_dir: str):
         return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
 
     @tool(
+        "lookup_knowledge",
+        "Search the Informed knowledge base for articles about surgical techniques, "
+        "robotic-assisted surgery, da Vinci systems, minimally invasive surgery, and "
+        "related clinical topics. Use this to enrich conversations with authoritative "
+        "content about surgical approaches and their benefits.",
+        {"query": str},
+    )
+    async def lookup_knowledge_tool(args):
+        result = _search_knowledge(args["query"])
+        return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+
+    @tool(
         "check_davinci_listing",
         "Check if a surgeon is listed on the Intuitive da Vinci Physician Locator.",
         {"first_name": str, "last_name": str, "city": str, "state": str},
@@ -332,6 +344,7 @@ def create_tools(session_output_dir: str):
     return [
         lookup_surgery_info_tool,
         find_best_surgeon_tool,
+        lookup_knowledge_tool,
         lookup_npi_tool,
         lookup_csv_tool,
         check_davinci_tool,
@@ -341,30 +354,93 @@ def create_tools(session_output_dir: str):
 
 
 # ---------------------------------------------------------------------------
-# Load business rules from markdown file
+# Load business rules and knowledge base from markdown files
 # ---------------------------------------------------------------------------
 
 RULES_DIR = os.path.join(BASE_DIR, "rules")
+KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
 
 
-def _load_rules() -> str:
-    """Load all .md rule files from the rules/ directory."""
-    if not os.path.isdir(RULES_DIR):
+def _load_md_directory(directory: str) -> str:
+    """Load all .md files from a directory and return concatenated content."""
+    if not os.path.isdir(directory):
         return ""
-    rules_text = []
-    for fname in sorted(os.listdir(RULES_DIR)):
+    texts = []
+    for fname in sorted(os.listdir(directory)):
         if fname.endswith(".md"):
-            fpath = os.path.join(RULES_DIR, fname)
+            fpath = os.path.join(directory, fname)
             try:
                 with open(fpath, "r", encoding="utf-8") as f:
-                    rules_text.append(f.read().strip())
+                    texts.append(f.read().strip())
             except Exception:
                 pass
-    return "\n\n".join(rules_text)
+    return "\n\n".join(texts)
 
 
-BUSINESS_RULES = _load_rules()
+def _list_knowledge_topics() -> list[str]:
+    """List available knowledge base topics."""
+    if not os.path.isdir(KNOWLEDGE_DIR):
+        return []
+    return [
+        f.replace(".md", "").replace("-", " ").replace("_", " ").title()
+        for f in sorted(os.listdir(KNOWLEDGE_DIR))
+        if f.endswith(".md")
+    ]
+
+
+def _search_knowledge(query: str) -> dict:
+    """Search the knowledge base for content matching a query.
+
+    Returns {"found": bool, "results": [{"topic": str, "content": str}]}.
+    """
+    if not os.path.isdir(KNOWLEDGE_DIR):
+        return {"found": False, "results": [], "available_topics": []}
+
+    query_lower = query.lower().strip()
+    query_words = query_lower.split()
+    results = []
+
+    for fname in sorted(os.listdir(KNOWLEDGE_DIR)):
+        if not fname.endswith(".md"):
+            continue
+        fpath = os.path.join(KNOWLEDGE_DIR, fname)
+        topic = fname.replace(".md", "").replace("-", " ").replace("_", " ").title()
+        fname_lower = fname.lower().replace("-", " ").replace("_", " ").replace(".md", "")
+
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            continue
+
+        # Score: filename match + content match
+        score = 0
+        if query_lower in fname_lower or fname_lower in query_lower:
+            score += 10
+        for w in query_words:
+            if len(w) > 2 and w in fname_lower:
+                score += 3
+            if len(w) > 2 and w in content.lower():
+                score += 1
+
+        if score > 0:
+            results.append({"topic": topic, "content": content, "_score": score})
+
+    results.sort(key=lambda r: r["_score"], reverse=True)
+    for r in results:
+        del r["_score"]
+
+    return {
+        "found": len(results) > 0,
+        "results": results[:3],  # Top 3 matches
+        "available_topics": _list_knowledge_topics(),
+    }
+
+
+BUSINESS_RULES = _load_md_directory(RULES_DIR)
+KNOWLEDGE_BASE = _load_md_directory(KNOWLEDGE_DIR)
 logger.info(f"Loaded business rules: {len(BUSINESS_RULES)} chars from {RULES_DIR}")
+logger.info(f"Loaded knowledge base: {len(KNOWLEDGE_BASE)} chars from {KNOWLEDGE_DIR} ({len(_list_knowledge_topics())} topics)")
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +462,14 @@ and wait for the user's response before proceeding.
 - Use the `lookup_surgery_info` tool to check the Surgery wiki knowledge base.
   - If a wiki article is found, use it as the PRIMARY source for your summary.
   - If no wiki article is found, provide a summary from your own medical knowledge.
-- Present a clear, patient-friendly summary of the surgery (2-3 paragraphs).
+- Use `lookup_knowledge` to search for relevant articles about the surgical \
+technique, especially robotic-assisted or minimally invasive approaches.
+  - If the procedure CAN be performed with robotic assistance (da Vinci system), \
+proactively mention the robotic-assisted option and its benefits (smaller \
+incisions, less pain, faster recovery, enhanced precision, 3D visualization).
+  - Use the knowledge base content as your source — do not invent claims.
+- Present a clear, patient-friendly summary of the surgery (2-3 paragraphs), \
+including any robotic-assisted option and its advantages.
 - Confirm with the user that you have the right procedure before continuing.
 
 ### Step 2: Health Screening Questions
@@ -412,8 +495,16 @@ to their surgery. Keep this factual and reassuring — do NOT diagnose.
 
 ### Step 4: Find the Best Surgeon
 - Use the `find_best_surgeon` tool to search for the top surgeon.
+- For the top recommended surgeons, use `check_davinci_listing` to check if \
+they are listed as da Vinci robotic surgeons.
 - Present results in a table: name, Informed Score, cases, complication-free \
 rate, cost, facility.
+- If a surgeon is da Vinci-listed, highlight this with a note about the \
+advantages of robotic-assisted surgery (use content from `lookup_knowledge` \
+about robotic surgery benefits).
+- If a robotic-certified surgeon has a similar Informed Score (within 5 points) \
+to the top-ranked surgeon, specifically call them out as a recommended \
+alternative and explain the potential benefits of choosing a robotic surgeon.
 - Recommend the #1 surgeon and ask if they want a full profile generated.
 
 ### Step 5: Generate Profile (if requested)
@@ -555,6 +646,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             "Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch",
             "mcp__surgeon-tools__lookup_surgery_info",
             "mcp__surgeon-tools__find_best_surgeon",
+            "mcp__surgeon-tools__lookup_knowledge",
             "mcp__surgeon-tools__lookup_npi",
             "mcp__surgeon-tools__lookup_csv_performance",
             "mcp__surgeon-tools__check_davinci_listing",

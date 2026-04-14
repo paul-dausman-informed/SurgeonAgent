@@ -30,6 +30,7 @@ COPY SurgeonScores/ ./SurgeonScores/
 COPY NationalTop80Score.csv ./
 COPY cbsa_lookup.json ./
 COPY rules/ ./rules/
+COPY knowledge/ ./knowledge/
 
 # Create directories for runtime data
 RUN mkdir -p output research_cache

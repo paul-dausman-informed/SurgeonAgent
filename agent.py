@@ -11,6 +11,7 @@ Conversational flow:
 Custom MCP tools:
   - lookup_surgery_info: Search the Surgery wiki knowledge base
   - find_best_surgeon: Find top surgeons by city + procedure from CSV
+  - lookup_knowledge: Search the Informed knowledge base (robotic surgery, MIS, etc.)
   - lookup_npi / research_surgeon / lookup_csv_performance / check_davinci_listing
   - generate_surgeon_profile: Create a formatted .docx from research data
 
@@ -101,6 +102,73 @@ async def find_best_surgeon_tool(args):
         state=args.get("state", ""),
         top_n=args.get("top_n", 5),
     )
+    return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+
+
+# ---------------------------------------------------------------------------
+# Knowledge base search
+# ---------------------------------------------------------------------------
+
+KNOWLEDGE_DIR = os.path.join(BASE_DIR, "knowledge")
+
+
+def _search_knowledge(query: str) -> dict:
+    """Search the knowledge/ directory for matching articles."""
+    if not os.path.isdir(KNOWLEDGE_DIR):
+        return {"found": False, "results": [], "available_topics": []}
+
+    query_lower = query.lower().strip()
+    query_words = query_lower.split()
+    results = []
+    topics = []
+
+    for fname in sorted(os.listdir(KNOWLEDGE_DIR)):
+        if not fname.endswith(".md"):
+            continue
+        topic = fname.replace(".md", "").replace("-", " ").replace("_", " ").title()
+        topics.append(topic)
+        fpath = os.path.join(KNOWLEDGE_DIR, fname)
+        fname_lower = fname.lower().replace("-", " ").replace("_", " ").replace(".md", "")
+
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            continue
+
+        score = 0
+        if query_lower in fname_lower or fname_lower in query_lower:
+            score += 10
+        for w in query_words:
+            if len(w) > 2 and w in fname_lower:
+                score += 3
+            if len(w) > 2 and w in content.lower():
+                score += 1
+
+        if score > 0:
+            results.append({"topic": topic, "content": content, "_score": score})
+
+    results.sort(key=lambda r: r["_score"], reverse=True)
+    for r in results:
+        del r["_score"]
+
+    return {
+        "found": len(results) > 0,
+        "results": results[:3],
+        "available_topics": topics,
+    }
+
+
+@tool(
+    "lookup_knowledge",
+    "Search the Informed knowledge base for articles about surgical techniques, "
+    "robotic-assisted surgery, da Vinci systems, minimally invasive surgery, and "
+    "related clinical topics. Use this to enrich conversations with authoritative "
+    "content about surgical approaches and their benefits.",
+    {"query": str},
+)
+async def lookup_knowledge_tool(args):
+    result = _search_knowledge(args["query"])
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
 
 
@@ -231,8 +299,14 @@ and wait for the user's response before proceeding.
 for information about this procedure.
   - If a wiki article is found, use it as the PRIMARY source for your summary.
   - If no wiki article is found, provide a summary from your own medical knowledge.
-- Present a clear, patient-friendly summary of the surgery (2-3 paragraphs): \
-what it involves, why it's performed, and what to generally expect.
+- Use `lookup_knowledge` to search for relevant articles about the surgical \
+technique, especially robotic-assisted or minimally invasive approaches.
+  - If the procedure CAN be performed with robotic assistance (da Vinci system), \
+proactively mention the robotic-assisted option and its benefits (smaller \
+incisions, less pain, faster recovery, enhanced precision, 3D visualization).
+  - Use the knowledge base content as your source — do not invent claims.
+- Present a clear, patient-friendly summary of the surgery (2-3 paragraphs), \
+including any robotic-assisted option and its advantages.
 - Confirm with the user that you have the right procedure before continuing.
 
 ### Step 2: Health Screening Questions
@@ -269,6 +343,8 @@ take into account.
 ### Step 4: Find the Best Surgeon
 - Use the `find_best_surgeon` tool to search for the top-rated surgeon in \
 their city for their procedure.
+- For the top recommended surgeons, use `check_davinci_listing` to check if \
+they are listed as da Vinci robotic surgeons.
 - Present the results clearly in a table format showing:
   - Surgeon name and credentials
   - Informed Score (explain this is a quality metric, higher = better)
@@ -276,6 +352,12 @@ their city for their procedure.
   - Complication-free rate
   - Average 90-day cost
   - Hospital/facility
+- If a surgeon is da Vinci-listed, highlight this with a note about the \
+advantages of robotic-assisted surgery (use content from `lookup_knowledge` \
+about robotic surgery benefits).
+- If a robotic-certified surgeon has a similar Informed Score (within 5 points) \
+to the top-ranked surgeon, specifically call them out as a recommended \
+alternative and explain the potential benefits of choosing a robotic surgeon.
 - If no surgeons are found in their exact city, the tool will search \
 state-wide and suggest nearby cities — present these alternatives.
 - Recommend the #1 ranked surgeon and ask if they'd like a full detailed \
@@ -375,6 +457,7 @@ async def main():
         tools=[
             lookup_surgery_info_tool,
             find_best_surgeon_tool,
+            lookup_knowledge_tool,
             lookup_npi_tool,
             lookup_csv_tool,
             check_davinci_tool,
@@ -396,6 +479,7 @@ async def main():
             "Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch",
             "mcp__surgeon-tools__lookup_surgery_info",
             "mcp__surgeon-tools__find_best_surgeon",
+            "mcp__surgeon-tools__lookup_knowledge",
             "mcp__surgeon-tools__lookup_npi",
             "mcp__surgeon-tools__lookup_csv_performance",
             "mcp__surgeon-tools__check_davinci_listing",
