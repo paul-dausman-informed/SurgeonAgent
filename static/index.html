@@ -468,11 +468,6 @@
             container.className = "procedure-selector";
             container.id = "procedure-selector";
 
-            const header = document.createElement("div");
-            header.className = "selector-header";
-            header.textContent = "Select a procedure below, or type your own:";
-            container.appendChild(header);
-
             procedureCategories.forEach(cat => {
                 const catDiv = document.createElement("div");
                 catDiv.className = "procedure-category";
