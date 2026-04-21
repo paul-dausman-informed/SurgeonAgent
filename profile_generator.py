@@ -591,13 +591,13 @@ def generate_profile(profile_data: dict, output_dir: str = None) -> str:
         for item in media:
             _add_bullet(doc, item)
 
-    # --- ROBOTIC SURGERY (da Vinci) ---
+    # --- ROBOTIC-ASSISTED SURGERY ---
     davinci_status = d.get("davinci_status", None)
     if davinci_status is not None:
-        _add_section_heading(doc, "ROBOTIC SURGERY")
+        _add_section_heading(doc, "ROBOTIC-ASSISTED SURGERY")
         if davinci_status.get("listed"):
             details = davinci_status.get("details", "")
-            text = f"Intuitive da Vinci Physician Locator: Yes — Listed"
+            text = "Robotic-Assisted Surgeon Directory: Yes — Listed"
             if details:
                 text += f" ({details})"
             _add_bullet(doc, text)
@@ -605,7 +605,7 @@ def generate_profile(profile_data: dict, output_dir: str = None) -> str:
             if davinci_url:
                 _add_bullet(doc, f"Profile: {davinci_url}")
         else:
-            _add_bullet(doc, "Intuitive da Vinci Physician Locator: No — Not Listed")
+            _add_bullet(doc, "Robotic-Assisted Surgeon Directory: No — Not Listed")
 
     # --- LANGUAGES ---
     _add_section_heading(doc, "LANGUAGES")

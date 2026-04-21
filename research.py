@@ -490,15 +490,15 @@ def check_intuitive_davinci(first_name: str, last_name: str, city: str, state: s
                 location = raw.get("Location", "")
 
                 details_parts = [
-                    "Listed on Intuitive da Vinci Physician Locator"
+                    "Listed in robotic-assisted surgeon directory"
                 ]
                 if proc_count:
                     details_parts.append(
-                        f"da Vinci procedure count: {proc_count}"
+                        f"Robotic-assisted procedure count: {proc_count}"
                     )
                 elif proc_category:
                     details_parts.append(
-                        f"da Vinci procedures: {proc_category}"
+                        f"Robotic-assisted procedures: {proc_category}"
                     )
                 if specialties:
                     details_parts.append(
@@ -533,7 +533,7 @@ def check_intuitive_davinci(first_name: str, last_name: str, city: str, state: s
         page += 1
 
     if not result["listed"]:
-        result["details"] = "Not found on Intuitive da Vinci Physician Locator"
+        result["details"] = "Not found in robotic-assisted surgeon directory"
 
     return result
 

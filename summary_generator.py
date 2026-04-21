@@ -255,7 +255,7 @@ def generate_consultation_summary(data: dict, output_dir: str = "") -> str:
             pdf.set_xy(pdf.l_margin + 3, y_start + 2)
             pdf.set_font("Helvetica", "B", 10)
             pdf.set_text_color(*CYAN)
-            pdf.cell(0, 8, "da Vinci Robotic Surgery Certified", align="L")
+            pdf.cell(0, 8, "Robotic-Assisted Surgery Certified", align="L")
             pdf.ln(14)
 
         pdf.ln(2)
@@ -404,7 +404,7 @@ if __name__ == "__main__":
             "a small organ beneath the liver that stores bile. It is most commonly "
             "performed to treat gallstones that cause pain or inflammation. The "
             "procedure can be performed using traditional open surgery, laparoscopic "
-            "techniques, or robotic-assisted surgery using the da Vinci system."
+            "techniques, or robotic-assisted surgery."
         ),
         "patient_city": "Dallas",
         "patient_state": "TX",
@@ -420,7 +420,7 @@ if __name__ == "__main__":
             "state": "TX",
             "medical_school": "University Of Texas Southwestern",
             "facilities": ["Baylor University Medical Center", "Texas Health Dallas"],
-            "davinci_status": {"listed": True, "details": "da Vinci certified"},
+            "davinci_status": {"listed": True, "details": "Robotic-assisted certified"},
         },
         "top_surgeons": [
             {"name": "John Smith", "informed_score": 95, "cases": 506, "complication_free_rate": "98.2%", "avg_90_day_cost": "$12,450", "facilities": ["Baylor University Medical Center"]},
