@@ -67,6 +67,10 @@ from research import (
 )
 from profile_generator import generate_profile
 from summary_generator import generate_consultation_summary as _generate_summary
+from email_sender import (
+    send_consultation_summary as _send_email,
+    validate_email as _validate_email,
+)
 logger.info("All imports complete")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -92,12 +96,18 @@ class RateLimiter:
     MAX_CONCURRENT = int(os.environ.get("RATE_LIMIT_CONCURRENT", "3"))
     MESSAGES_PER_SESSION = int(os.environ.get("RATE_LIMIT_MESSAGES", "60"))
     HTTP_REQUESTS_PER_MIN = int(os.environ.get("RATE_LIMIT_HTTP", "30"))
+    EMAILS_PER_IP_HOUR = int(os.environ.get("RATE_LIMIT_EMAILS_IP", "3"))
+    EMAILS_PER_ADDR_HOUR = int(os.environ.get("RATE_LIMIT_EMAILS_ADDR", "2"))
+    EMAILS_PER_SESSION = int(os.environ.get("RATE_LIMIT_EMAILS_SESSION", "1"))
 
     def __init__(self):
         self._ws_timestamps: dict[str, list[float]] = defaultdict(list)
         self._active_sessions: dict[str, set[str]] = defaultdict(set)
         self._msg_counts: dict[str, int] = {}          # session_id -> count
         self._http_timestamps: dict[str, list[float]] = defaultdict(list)
+        self._email_ip_timestamps: dict[str, list[float]] = defaultdict(list)
+        self._email_addr_timestamps: dict[str, list[float]] = defaultdict(list)
+        self._email_session_counts: dict[str, int] = {}
 
     # -- helpers --
 
@@ -142,6 +152,7 @@ class RateLimiter:
         if not self._active_sessions[ip]:
             del self._active_sessions[ip]
         self._msg_counts.pop(session_id, None)
+        self._email_session_counts.pop(session_id, None)
 
     # -- HTTP guards --
 
@@ -154,6 +165,41 @@ class RateLimiter:
         self._http_timestamps[ip].append(time.time())
         return True
 
+    # -- Email guards --
+
+    def check_email(self, ip: str, session_id: str, to_addr: str) -> str | None:
+        """Return an error message if the email send should be rejected, else None."""
+        to_key = to_addr.strip().lower()
+
+        # IP-level hourly limit
+        self._email_ip_timestamps[ip] = self._prune(self._email_ip_timestamps[ip], 3600)
+        if len(self._email_ip_timestamps[ip]) >= self.EMAILS_PER_IP_HOUR:
+            logger.warning(f"Email rate limit: {ip} exceeded {self.EMAILS_PER_IP_HOUR}/hour")
+            return "Email send limit reached for your location. Please try again later."
+
+        # Per-destination hourly limit (anti-harassment)
+        self._email_addr_timestamps[to_key] = self._prune(self._email_addr_timestamps[to_key], 3600)
+        if len(self._email_addr_timestamps[to_key]) >= self.EMAILS_PER_ADDR_HOUR:
+            logger.warning(f"Email rate limit: destination {to_key} exceeded {self.EMAILS_PER_ADDR_HOUR}/hour")
+            return "This email address has received too many messages recently. Please try again later."
+
+        # Per-session limit
+        count = self._email_session_counts.get(session_id, 0)
+        if count >= self.EMAILS_PER_SESSION:
+            logger.warning(f"Email rate limit: session {session_id[:8]}... exceeded {self.EMAILS_PER_SESSION}")
+            return "You have already sent the consultation summary for this session."
+
+        # Record
+        now = time.time()
+        self._email_ip_timestamps[ip].append(now)
+        self._email_addr_timestamps[to_key].append(now)
+        self._email_session_counts[session_id] = count + 1
+        return None
+
+    def release_email_session(self, session_id: str):
+        """Called on WebSocket disconnect to clean up email session counter."""
+        self._email_session_counts.pop(session_id, None)
+
     def cleanup(self):
         """Periodic housekeeping — remove stale entries."""
         now = time.time()
@@ -165,6 +211,14 @@ class RateLimiter:
                       if not self._prune(ts, 60)]
         for ip in stale_http:
             del self._http_timestamps[ip]
+        stale_email_ips = [ip for ip, ts in self._email_ip_timestamps.items()
+                           if not self._prune(ts, 3600)]
+        for ip in stale_email_ips:
+            del self._email_ip_timestamps[ip]
+        stale_email_addrs = [a for a, ts in self._email_addr_timestamps.items()
+                             if not self._prune(ts, 3600)]
+        for a in stale_email_addrs:
+            del self._email_addr_timestamps[a]
 
 
 rate_limiter = RateLimiter()
@@ -204,7 +258,7 @@ SESSION_TIMEOUT_SECONDS = 30 * 60  # 30 minutes
 # Tool factories — creates per-session tools with isolated output directories
 # ---------------------------------------------------------------------------
 
-def create_tools(session_output_dir: str):
+def create_tools(session_output_dir: str, session_id: str = "", client_ip: str = ""):
     """Create a set of MCP tools scoped to a specific session output directory."""
 
     @tool(
@@ -365,6 +419,67 @@ def create_tools(session_output_dir: str):
         except Exception as e:
             return {"content": [{"type": "text", "text": f"Error generating summary: {e}"}]}
 
+    @tool(
+        "email_consultation_summary",
+        "Email the consultation summary PDF to the user. Call this ONLY after "
+        "the user has explicitly provided an email address and confirmed they "
+        "want it sent. Required params: to_email (the recipient), pdf_filename "
+        "(the filename returned by generate_consultation_summary), "
+        "procedure_name (for the subject/body), surgeon_name (for the body).",
+        {
+            "to_email": str,
+            "pdf_filename": str,
+            "procedure_name": str,
+            "surgeon_name": str,
+        },
+    )
+    async def email_summary_tool(args):
+        to_email = args.get("to_email", "").strip()
+        pdf_filename = args.get("pdf_filename", "").strip()
+
+        # Validate email format
+        if not _validate_email(to_email):
+            return {"content": [{"type": "text", "text": (
+                f"The email address '{to_email}' doesn't look valid. "
+                f"Please double-check and try again."
+            )}]}
+
+        # Rate limits (IP / per-address / per-session)
+        reject = rate_limiter.check_email(client_ip, session_id, to_email)
+        if reject:
+            return {"content": [{"type": "text", "text": reject}]}
+
+        # Locate the PDF
+        pdf_path = os.path.join(session_output_dir, pdf_filename)
+        if not os.path.isfile(pdf_path):
+            # Fallback: find the most recent PDF in the session output dir
+            pdfs = [f for f in os.listdir(session_output_dir) if f.endswith(".pdf")] \
+                if os.path.isdir(session_output_dir) else []
+            if pdfs:
+                pdfs.sort(key=lambda f: os.path.getmtime(
+                    os.path.join(session_output_dir, f)), reverse=True)
+                pdf_path = os.path.join(session_output_dir, pdfs[0])
+            else:
+                return {"content": [{"type": "text", "text": (
+                    "No consultation summary PDF found. Please generate the "
+                    "summary first with generate_consultation_summary."
+                )}]}
+
+        result = _send_email(
+            to_email=to_email,
+            pdf_path=pdf_path,
+            procedure_name=args.get("procedure_name", ""),
+            surgeon_name=args.get("surgeon_name", ""),
+        )
+        if result["success"]:
+            return {"content": [{"type": "text", "text": (
+                f"Email sent successfully to {to_email}. "
+                f"They should receive it shortly."
+            )}]}
+        return {"content": [{"type": "text", "text": (
+            f"Email could not be sent: {result['message']}"
+        )}]}
+
     return [
         lookup_surgery_info_tool,
         find_best_surgeon_tool,
@@ -375,6 +490,7 @@ def create_tools(session_output_dir: str):
         research_surgeon_tool,
         generate_profile_tool,
         generate_summary_tool,
+        email_summary_tool,
     ]
 
 
@@ -646,6 +762,33 @@ IMPORTANT: The `top_surgeons` list should include ALL surgeons from Step 4 \
 (up to 5), including the recommended surgeon. Use the data you already have \
 from the `find_best_surgeon` results — do NOT re-query.
 
+After generating the PDF, tell the user it's ready and include the exact \
+`Download filename` returned by the tool — you will need this filename in Step 7.
+
+### Step 7: Offer to Email the Summary
+After the PDF is generated, ask:
+"Would you like me to also email a copy to you? If so, what email address \
+should I send it to?"
+
+- If the user declines, thank them and end the conversation warmly.
+- If they provide an email address:
+  1. READ THE ADDRESS BACK to them exactly as you heard it and ask them to \
+confirm: "Just to confirm — I'll send it to [address]. Is that correct?"
+  2. Only after they confirm (yes / correct / that's right), call \
+`email_consultation_summary` with:
+     - `to_email`: the confirmed address
+     - `pdf_filename`: the filename from Step 6 (the PDF you just generated)
+     - `procedure_name`: the procedure discussed
+     - `surgeon_name`: the recommended surgeon's name
+  3. Report the result to the user:
+     - On success: "Great — I've sent the summary to [address]. You should \
+receive it shortly. Please check your spam folder if you don't see it."
+     - On failure: apologize, state the reason briefly, and offer the download \
+link as an alternative.
+- NEVER send an email without explicit confirmation.
+- If the user gives you a different address on confirmation, read back the \
+new one and confirm again before sending.
+
 ## Important Rules
 - Be warm, professional, and patient-centered.
 - NEVER provide medical diagnoses or treatment recommendations.
@@ -731,7 +874,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     os.makedirs(session_output_dir, exist_ok=True)
 
     # Create session-scoped tools and MCP server
-    tools = create_tools(session_output_dir)
+    tools = create_tools(session_output_dir, session_id=session_id, client_ip=client_ip)
     server = create_sdk_mcp_server("surgeon-tools", tools=tools)
 
     options = ClaudeAgentOptions(
@@ -748,6 +891,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             "mcp__surgeon-tools__research_surgeon",
             "mcp__surgeon-tools__generate_surgeon_profile",
             "mcp__surgeon-tools__generate_consultation_summary",
+            "mcp__surgeon-tools__email_consultation_summary",
         ],
         permission_mode="acceptEdits",
         max_turns=50,

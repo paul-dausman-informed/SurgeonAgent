@@ -58,6 +58,10 @@ from research import (
 )
 from profile_generator import generate_profile
 from summary_generator import generate_consultation_summary as _generate_summary
+from email_sender import (
+    send_consultation_summary as _send_email,
+    validate_email as _validate_email,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -295,10 +299,64 @@ async def generate_summary_tool(args):
     try:
         filepath = _generate_summary(summary_data)
         return {"content": [{"type": "text", "text": (
-            f"Consultation summary PDF generated!\nSaved to: {filepath}"
+            f"Consultation summary PDF generated!\nSaved to: {filepath}\n"
+            f"Download filename: {os.path.basename(filepath)}"
         )}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error generating summary: {e}"}]}
+
+
+@tool(
+    "email_consultation_summary",
+    "Email the consultation summary PDF to the user. Call this ONLY after "
+    "the user has explicitly provided an email address and confirmed they "
+    "want it sent. Required params: to_email, pdf_filename (from "
+    "generate_consultation_summary output), procedure_name, surgeon_name.",
+    {
+        "to_email": str,
+        "pdf_filename": str,
+        "procedure_name": str,
+        "surgeon_name": str,
+    },
+)
+async def email_summary_tool(args):
+    to_email = args.get("to_email", "").strip()
+    pdf_filename = args.get("pdf_filename", "").strip()
+
+    if not _validate_email(to_email):
+        return {"content": [{"type": "text", "text": (
+            f"The email address '{to_email}' doesn't look valid. "
+            f"Please double-check and try again."
+        )}]}
+
+    # Locate the PDF in the default output dir
+    output_dir = os.path.join(BASE_DIR, "output")
+    pdf_path = os.path.join(output_dir, pdf_filename)
+    if not os.path.isfile(pdf_path):
+        pdfs = [f for f in os.listdir(output_dir) if f.endswith(".pdf")] \
+            if os.path.isdir(output_dir) else []
+        if pdfs:
+            pdfs.sort(key=lambda f: os.path.getmtime(
+                os.path.join(output_dir, f)), reverse=True)
+            pdf_path = os.path.join(output_dir, pdfs[0])
+        else:
+            return {"content": [{"type": "text", "text": (
+                "No consultation summary PDF found. Please generate it first."
+            )}]}
+
+    result = _send_email(
+        to_email=to_email,
+        pdf_path=pdf_path,
+        procedure_name=args.get("procedure_name", ""),
+        surgeon_name=args.get("surgeon_name", ""),
+    )
+    if result["success"]:
+        return {"content": [{"type": "text", "text": (
+            f"Email sent successfully to {to_email}."
+        )}]}
+    return {"content": [{"type": "text", "text": (
+        f"Email could not be sent: {result['message']}"
+    )}]}
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +557,26 @@ IMPORTANT: The `top_surgeons` list should include ALL surgeons from Step 4 \
 (up to 5), including the recommended surgeon. Use the data you already have \
 from the `find_best_surgeon` results — do NOT re-query.
 
+After generating the PDF, tell the user it's ready and remember the exact \
+`Download filename` returned by the tool — you will need this filename in Step 7.
+
+### Step 7: Offer to Email the Summary
+After the PDF is generated, ask:
+"Would you like me to also email a copy to you? If so, what email address \
+should I send it to?"
+
+- If the user declines, thank them and end the conversation warmly.
+- If they provide an email address:
+  1. READ THE ADDRESS BACK to them and ask for confirmation: \
+"Just to confirm — I'll send it to [address]. Is that correct?"
+  2. Only after they confirm, call `email_consultation_summary` with:
+     - `to_email`: the confirmed address
+     - `pdf_filename`: the filename from Step 6
+     - `procedure_name`: the procedure discussed
+     - `surgeon_name`: the recommended surgeon's name
+  3. Report success or failure to the user.
+- NEVER send an email without explicit confirmation.
+
 ## Important Rules
 - Be warm, professional, and patient-centered in your tone.
 - NEVER provide medical diagnoses or treatment recommendations.
@@ -555,6 +633,7 @@ async def main():
             research_surgeon_tool,
             generate_profile_tool,
             generate_summary_tool,
+            email_summary_tool,
         ],
     )
 
@@ -578,6 +657,7 @@ async def main():
             "mcp__surgeon-tools__research_surgeon",
             "mcp__surgeon-tools__generate_surgeon_profile",
             "mcp__surgeon-tools__generate_consultation_summary",
+            "mcp__surgeon-tools__email_consultation_summary",
         ],
         permission_mode="acceptEdits",
         max_turns=50,

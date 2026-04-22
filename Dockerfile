@@ -24,7 +24,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code and data
-COPY agent.py server.py start.py research.py profile_generator.py summary_generator.py ./
+COPY agent.py server.py start.py research.py profile_generator.py summary_generator.py email_sender.py ./
 COPY static/ ./static/
 COPY SurgeonScores/ ./SurgeonScores/
 COPY NationalTop80Score.csv ./
