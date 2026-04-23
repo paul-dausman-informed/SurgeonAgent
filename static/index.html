@@ -89,6 +89,181 @@
         #status.connecting { background: rgba(224,64,251,0.15); color: var(--magenta); }
         #status.error { background: rgba(239,68,68,0.15); color: #ef4444; }
 
+        /* ---- Main row (sidebar + content) ---- */
+        #main-row {
+            flex: 1;
+            display: flex;
+            flex-direction: row;
+            min-height: 0;
+        }
+
+        #content-column {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        /* ---- File Cabinet sidebar ---- */
+        #file-cabinet {
+            width: 240px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        .cabinet-header {
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .cabinet-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+
+        .cabinet-icon {
+            font-size: 18px;
+            filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.4));
+        }
+
+        .cabinet-toggle {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 22px;
+            cursor: pointer;
+            padding: 0;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: none; /* only shown on mobile */
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s;
+        }
+        .cabinet-toggle:hover { background: var(--bg-surface); color: var(--text-primary); }
+
+        .cabinet-empty {
+            padding: 20px 16px;
+            font-size: 12.5px;
+            color: var(--text-muted);
+            font-style: italic;
+            line-height: 1.5;
+        }
+
+        .cabinet-list {
+            list-style: none;
+            overflow-y: auto;
+            padding: 6px 0;
+            flex: 1;
+        }
+        .cabinet-list::-webkit-scrollbar { width: 6px; }
+        .cabinet-list::-webkit-scrollbar-track { background: transparent; }
+        .cabinet-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .cabinet-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            margin: 2px 8px;
+            border-radius: 8px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 12.5px;
+            line-height: 1.3;
+            transition: background 0.15s, color 0.15s, transform 0.15s;
+            border: 1px solid transparent;
+            animation: fadeIn 0.3s ease;
+        }
+        .cabinet-item:hover {
+            background: rgba(0, 212, 255, 0.08);
+            color: var(--cyan);
+            border-color: rgba(0, 212, 255, 0.2);
+            transform: translateX(2px);
+        }
+
+        .cabinet-file-icon {
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+        .cabinet-file-icon.pdf { color: #EF4444; }
+        .cabinet-file-icon.doc { color: #3B82F6; }
+
+        .cabinet-file-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+            flex: 1;
+        }
+        .cabinet-file-name {
+            font-weight: 500;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .cabinet-item:hover .cabinet-file-name { color: var(--cyan); }
+        .cabinet-file-type {
+            font-size: 10.5px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        /* Mobile open button (floating) */
+        .cabinet-open-btn {
+            display: none;
+            position: fixed;
+            bottom: 74px;
+            left: 12px;
+            z-index: 50;
+            background: var(--gradient);
+            color: #0B0F19;
+            border: none;
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+        .cabinet-open-btn.has-files { display: flex; }
+        .cabinet-open-count {
+            position: absolute;
+            top: -4px;
+            right: -4px;
+            background: var(--magenta);
+            color: white;
+            font-size: 10px;
+            font-weight: 700;
+            min-width: 18px;
+            height: 18px;
+            border-radius: 9px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 5px;
+            border: 2px solid var(--bg-primary);
+        }
+
         /* ---- Chat area ---- */
         #chat-container {
             flex: 1;
@@ -405,6 +580,25 @@
             .procedure-selector { max-width: 92%; }
             .procedure-chip { font-size: 12px; padding: 6px 11px; }
             .procedure-category .category-label { font-size: 10px; }
+
+            /* File cabinet: slide-over drawer on mobile */
+            #file-cabinet {
+                position: fixed;
+                top: 0;
+                left: 0;
+                bottom: 0;
+                width: 80%;
+                max-width: 280px;
+                z-index: 100;
+                transform: translateX(-100%);
+                transition: transform 0.25s ease;
+                box-shadow: 4px 0 20px rgba(0,0,0,0.4);
+            }
+            #file-cabinet.open { transform: translateX(0); }
+            .cabinet-toggle { display: flex; }
+
+            /* Mobile: show floating button only when there are files */
+            .cabinet-open-btn.has-files { display: flex; }
         }
     </style>
 </head>
@@ -419,17 +613,40 @@
         <div id="status" class="connecting">Connecting...</div>
     </header>
 
-    <div id="chat-container">
-        <div class="typing-indicator" id="typing">
-            <span></span><span></span><span></span>
-        </div>
-    </div>
+    <div id="main-row">
+        <aside id="file-cabinet" aria-label="File Cabinet">
+            <div class="cabinet-header">
+                <div class="cabinet-title">
+                    <span class="cabinet-icon" aria-hidden="true">&#128194;</span>
+                    <span>File Cabinet</span>
+                </div>
+                <button type="button" id="cabinet-toggle" class="cabinet-toggle" aria-label="Toggle File Cabinet">&times;</button>
+            </div>
+            <div id="cabinet-empty" class="cabinet-empty">
+                Documents you generate will appear here.
+            </div>
+            <ul id="cabinet-list" class="cabinet-list"></ul>
+        </aside>
 
-    <div id="input-area">
-        <form id="input-form">
-            <input type="text" id="user-input" placeholder="Type your message..." autocomplete="off" disabled />
-            <button type="submit" id="send-btn" disabled>Send</button>
-        </form>
+        <button type="button" id="cabinet-open" class="cabinet-open-btn" aria-label="Open File Cabinet">
+            <span class="cabinet-open-icon">&#128194;</span>
+            <span class="cabinet-open-count" id="cabinet-open-count">0</span>
+        </button>
+
+        <div id="content-column">
+            <div id="chat-container">
+                <div class="typing-indicator" id="typing">
+                    <span></span><span></span><span></span>
+                </div>
+            </div>
+
+            <div id="input-area">
+                <form id="input-form">
+                    <input type="text" id="user-input" placeholder="Type your message..." autocomplete="off" disabled />
+                    <button type="submit" id="send-btn" disabled>Send</button>
+                </form>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -658,16 +875,72 @@
             return div;
         }
 
-        function addDownloadLink(filename, url) {
-            const div = document.createElement("div");
-            div.className = "message assistant";
-            div.innerHTML = `<strong>Profile ready for download:</strong><br>
-                <a class="download-link" href="${url}" download="${filename}">
-                    Download ${filename}
-                </a>`;
-            chatContainer.insertBefore(div, typingIndicator);
-            scrollToBottom();
+        // ---- File Cabinet ----
+        const cabinetList = document.getElementById("cabinet-list");
+        const cabinetEmpty = document.getElementById("cabinet-empty");
+        const cabinetEl = document.getElementById("file-cabinet");
+        const cabinetToggle = document.getElementById("cabinet-toggle");
+        const cabinetOpenBtn = document.getElementById("cabinet-open");
+        const cabinetOpenCount = document.getElementById("cabinet-open-count");
+        const addedFiles = new Set();
+
+        function prettyFileName(filename) {
+            // Strip extension and replace underscores with spaces
+            return filename.replace(/\.[^.]+$/, "").replace(/_/g, " ");
         }
+
+        function fileTypeLabel(filename) {
+            const m = filename.toLowerCase().match(/\.([a-z0-9]+)$/);
+            if (!m) return "File";
+            return m[1].toUpperCase();
+        }
+
+        function addDownloadLink(filename, url) {
+            if (addedFiles.has(filename)) return; // dedupe
+            addedFiles.add(filename);
+
+            cabinetEmpty.style.display = "none";
+
+            const li = document.createElement("li");
+            const a = document.createElement("a");
+            a.className = "cabinet-item";
+            a.href = url;
+            a.download = filename;
+            a.target = "_blank";
+            a.rel = "noopener";
+
+            const ext = fileTypeLabel(filename).toLowerCase();
+            const iconClass = ext === "pdf" ? "pdf" : (ext === "docx" ? "doc" : "");
+            a.innerHTML = `
+                <span class="cabinet-file-icon ${iconClass}" aria-hidden="true">&#128196;</span>
+                <span class="cabinet-file-meta">
+                    <span class="cabinet-file-name"></span>
+                    <span class="cabinet-file-type">${fileTypeLabel(filename)} &middot; Download</span>
+                </span>
+            `;
+            a.querySelector(".cabinet-file-name").textContent = prettyFileName(filename);
+
+            li.appendChild(a);
+            cabinetList.appendChild(li);
+
+            // Update mobile badge count
+            cabinetOpenCount.textContent = addedFiles.size;
+            cabinetOpenBtn.classList.add("has-files");
+
+            // Brief highlight pulse so the user notices
+            a.animate(
+                [
+                    { background: "rgba(0, 212, 255, 0.25)" },
+                    { background: "rgba(0, 212, 255, 0)" },
+                ],
+                { duration: 1400, easing: "ease-out" }
+            );
+        }
+
+        function openCabinet() { cabinetEl.classList.add("open"); }
+        function closeCabinet() { cabinetEl.classList.remove("open"); }
+        if (cabinetToggle) cabinetToggle.addEventListener("click", closeCabinet);
+        if (cabinetOpenBtn) cabinetOpenBtn.addEventListener("click", openCabinet);
 
         function setInputEnabled(enabled) {
             userInput.disabled = !enabled;
