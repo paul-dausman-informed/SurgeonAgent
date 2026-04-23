@@ -155,11 +155,23 @@ def build_patient_features(
 
 
 _SCORE_PATHS = [
+    # Primary: probability of NO complication event — this is the Patient Match Score.
+    # Higher = lower predicted complication risk = better fit for this patient.
+    ("output", "output_df", 0, "ComplicationEvent_proba_0"),
+    ("output_df", 0, "ComplicationEvent_proba_0"),
+    ("output", "ComplicationEvent_proba_0"),
+    ("ComplicationEvent_proba_0",),
+    # Fallback shapes (generic Foundry transformJson responses)
     ("output", "output_df", 0, "score"),
     ("output", "output_df", 0, "prediction"),
+    ("output", "output_df", 0, "match_score"),
+    ("output", "output_df", 0, "patient_match_score"),
+    ("output", "output_df", 0, "probability"),
+    ("output", "prediction"),
+    ("output", "score"),
+    ("output", "match_score"),
     ("output_df", 0, "score"),
     ("output_df", 0, "prediction"),
-    ("output", "score"),
     ("score",),
     ("prediction",),
 ]
@@ -296,10 +308,27 @@ async def get_match_score(
 
     score = extract_score(result)
     if score is None:
-        logger.warning(
-            f"Palantir response parsed but no score found. Keys: "
-            f"{list(result.keys()) if isinstance(result, dict) else type(result).__name__}"
-        )
+        # Log a truncated structural dump so we can see the actual shape
+        # without needing PALANTIR_DEBUG=1.
+        def _shape(obj, depth=0, max_depth=4):
+            if depth >= max_depth:
+                return f"<{type(obj).__name__}>"
+            if isinstance(obj, dict):
+                return {k: _shape(v, depth + 1, max_depth) for k, v in obj.items()}
+            if isinstance(obj, list):
+                if not obj:
+                    return []
+                return [_shape(obj[0], depth + 1, max_depth),
+                        f"... +{len(obj)-1} more" if len(obj) > 1 else None]
+            if isinstance(obj, str) and len(obj) > 60:
+                return obj[:60] + "..."
+            return obj
+        import json as _json
+        try:
+            shape_str = _json.dumps(_shape(result), default=str)[:800]
+        except Exception:
+            shape_str = str(result)[:800]
+        logger.warning(f"Palantir response parsed but no score found. Shape: {shape_str}")
     return score
 
 
