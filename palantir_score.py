@@ -26,9 +26,14 @@ DEFAULT_MODEL_URL = (
     "transformJson?preview=true"
 )
 
-REQUEST_TIMEOUT_SECONDS = 10
-MAX_RETRIES = 3
+REQUEST_TIMEOUT_SECONDS = int(os.environ.get("PALANTIR_TIMEOUT_SECONDS", "30"))
+MAX_RETRIES = int(os.environ.get("PALANTIR_MAX_RETRIES", "3"))
 RETRY_BACKOFF_BASE = 0.6  # seconds; exponential: 0.6s, 1.2s, 2.4s
+# Cap parallel requests — firing 5+ simultaneously can overwhelm a cold deployment
+MAX_CONCURRENT_CALLS = int(os.environ.get("PALANTIR_MAX_CONCURRENT", "3"))
+
+# Connect timeout can stay short; read timeout is the slow one for cold starts
+_CONNECT_TIMEOUT = 5
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +225,14 @@ def _call_palantir_sync(payload_row: dict) -> Optional[dict]:
     last_err: Optional[Exception] = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            # (connect_timeout, read_timeout) — allow up to REQUEST_TIMEOUT_SECONDS
+            # for the model to respond, since Palantir live deployments can take
+            # 1-10s per call (longer on cold starts).
             resp = requests.post(
-                url, json=body, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS
+                url,
+                json=body,
+                headers=headers,
+                timeout=(_CONNECT_TIMEOUT, REQUEST_TIMEOUT_SECONDS),
             )
             if resp.status_code == 401:
                 logger.warning("Palantir 401 Unauthorized — token may have expired")
@@ -297,16 +308,23 @@ async def score_surgeons(
     inf_proc_group: str,
     patient_features: dict,
 ) -> list[dict]:
-    """Fetch match scores for multiple surgeons in parallel.
+    """Fetch match scores for multiple surgeons, throttled for endpoint safety.
 
     Each surgeon dict must have an `npi` key. Returns a list of dicts with
     added `match_score` (0.0-1.0 or None) and `match_score_display` ('98% Match' or '').
 
     Failures for individual surgeons are tolerated — they just get None scores.
+    Concurrency is capped at MAX_CONCURRENT_CALLS to avoid overwhelming a
+    cold deployment.
     """
+    sem = asyncio.Semaphore(max(1, MAX_CONCURRENT_CALLS))
+
     async def _one(s: dict) -> dict:
         npi = s.get("npi", "")
-        score = await get_match_score(npi, inf_proc_group, patient_features) if npi else None
+        if not npi:
+            return {**s, "match_score": None, "match_score_display": ""}
+        async with sem:
+            score = await get_match_score(npi, inf_proc_group, patient_features)
         return {
             **s,
             "match_score": score,
