@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_URL = (
     "https://informedsurgical.palantirfoundry.com/api/v2/models/liveDeployments/"
-    "ri.foundry-ml-live.main.live-deployment.94b5c9b0-bdd5-48ab-93b7-5165daa182aa/"
+    "ri.foundry-ml-live.main.live-deployment.b6302c00-8e5e-4cb2-86f2-ec1e355becec/"
     "transformJson?preview=true"
 )
 
@@ -286,12 +286,20 @@ async def get_match_score(
 ) -> Optional[float]:
     """Async wrapper: returns a 0.0-1.0 score, or None on any failure."""
     payload = {
+        # Fixed values per model spec (2026-04-23 update)
+        "InformedFeature": 0,
+        "RoboticFeature": 0,
+        "SurgeonRiskCategory": 1,
+        "SurgeonRatingCategory": 1,
+        "pos": "Outpatient Hospital",
+        # Patient-derived features
         "HighBMIFeature": int(patient_features.get("HighBMIFeature", 0)),
         "DiabetesType1Feature": int(patient_features.get("DiabetesType1Feature", 0)),
         "DiabetesType2Feature": int(patient_features.get("DiabetesType2Feature", 0)),
         "DiabetesAllFeature": int(patient_features.get("DiabetesAllFeature", 0)),
         "PatientAgeCategory": int(patient_features.get("PatientAgeCategory", 0)),
         "PatientRiskCategory": int(patient_features.get("PatientRiskCategory", 0)),
+        # Per-call identifiers
         "npi": str(npi).strip(),
         "inf_proc_group": str(inf_proc_group).strip(),
         "sex": str(patient_features.get("sex", "")).strip(),
