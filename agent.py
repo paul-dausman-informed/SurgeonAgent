@@ -62,6 +62,10 @@ from email_sender import (
     send_consultation_summary as _send_email,
     validate_email as _validate_email,
 )
+from palantir_score import (
+    build_patient_features as _build_patient_features,
+    score_surgeons as _score_surgeons,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -108,6 +112,57 @@ async def find_best_surgeon_tool(args):
         top_n=args.get("top_n", 5),
     )
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
+
+
+@tool(
+    "get_patient_match_scores",
+    "Get per-surgeon Patient Match Scores from the Palantir model. Call once "
+    "after find_best_surgeon with the full list of surgeons and the patient's "
+    "collected health data. Returns each surgeon with match_score_display "
+    "added (e.g. '98% Match').",
+    {
+        "surgeons_json": str,
+        "procedure": str,
+        "bmi": float,
+        "diabetes_status": str,
+        "age": int,
+        "general_health": str,
+        "gender": str,
+    },
+)
+async def get_match_scores_tool(args):
+    try:
+        surgeons = json.loads(args["surgeons_json"])
+        if not isinstance(surgeons, list):
+            return {"content": [{"type": "text", "text": "surgeons_json must be a JSON array"}]}
+    except json.JSONDecodeError as e:
+        return {"content": [{"type": "text", "text": f"Invalid surgeons_json: {e}"}]}
+
+    age_val = args.get("age", 0)
+    features = _build_patient_features(
+        bmi=args.get("bmi") or None,
+        diabetes_status=args.get("diabetes_status", "") or "",
+        age=int(age_val) if age_val else None,
+        general_health=args.get("general_health", "") or "",
+        gender=args.get("gender", "") or "",
+    )
+
+    try:
+        scored = await _score_surgeons(
+            surgeons=surgeons,
+            inf_proc_group=args.get("procedure", ""),
+            patient_features=features,
+        )
+    except Exception as e:
+        return {"content": [{"type": "text", "text": (
+            f"Match scoring unavailable ({e}). Proceeding without match scores."
+        )}]}
+
+    summary = {
+        "patient_features": features,
+        "scored_surgeons": scored,
+    }
+    return {"content": [{"type": "text", "text": json.dumps(summary, indent=2)}]}
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +470,11 @@ Ask the following health questions ONE AT A TIME:
     - 30.0+: Obese
 - Record the BMI value.
 
+**Age:**
+- Ask: "What is your age?"
+- Accept a numeric answer. If the user prefers not to say or gives a non-numeric answer, record age as unknown.
+- Do NOT attach an OPTIONS marker — this is free-text numeric input.
+
 **Gender:**
 - Ask: "What is your gender?"
 - At the END of that message (on its own line, nothing after) append this exact marker:
@@ -469,10 +529,19 @@ metrics (using `lookup_csv_performance` or by searching `find_best_surgeon` \
 results for a name match) and INCLUDE them in your comparison table even if \
 they are not in the top 5. Clearly label their row as "Your Referred Surgeon" \
 so the user can compare them side-by-side with the top-ranked options.
+- **CALL `get_patient_match_scores` ONCE** with the full surgeon list (each \
+must include `npi`) plus the patient's collected data: `procedure`, `bmi`, \
+`diabetes_status` ("none"/"type 1"/"type 2"), `age` (int, 0 if unknown), \
+`general_health` (exact label), `gender` ("Male"/"Female"/"No Answer"). Each \
+returned surgeon will have a `match_score_display` string ("98% Match"). \
+If it's empty, the service was unavailable — just omit that column entry \
+for that surgeon and keep going. Do NOT mention "Palantir" or any backend \
+service to the user.
 - For the top recommended surgeons, use `check_davinci_listing` to check if \
 they are listed as robotic-assisted surgeons.
 - Present the results clearly in a table format showing:
   - Surgeon name and credentials
+  - **Patient Match** (the `match_score_display` value; blank if unavailable)
   - Informed Score (explain this is a quality metric, higher = better)
   - Number of cases performed
   - Complication-free rate
@@ -655,6 +724,7 @@ async def main():
         tools=[
             lookup_surgery_info_tool,
             find_best_surgeon_tool,
+            get_match_scores_tool,
             lookup_knowledge_tool,
             lookup_npi_tool,
             lookup_csv_tool,
@@ -679,6 +749,7 @@ async def main():
             "Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch",
             "mcp__surgeon-tools__lookup_surgery_info",
             "mcp__surgeon-tools__find_best_surgeon",
+            "mcp__surgeon-tools__get_patient_match_scores",
             "mcp__surgeon-tools__lookup_knowledge",
             "mcp__surgeon-tools__lookup_npi",
             "mcp__surgeon-tools__lookup_csv_performance",

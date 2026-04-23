@@ -71,6 +71,10 @@ from email_sender import (
     send_consultation_summary as _send_email,
     validate_email as _validate_email,
 )
+from palantir_score import (
+    build_patient_features as _build_patient_features,
+    score_surgeons as _score_surgeons,
+)
 logger.info("All imports complete")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -296,6 +300,67 @@ def create_tools(session_output_dir: str, session_id: str = "", client_ip: str =
         return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
 
     @tool(
+        "get_patient_match_scores",
+        "Get per-surgeon Patient Match Scores from the Palantir model for the "
+        "top surgeons. Call this AFTER find_best_surgeon, ONCE, with the full "
+        "list of top surgeons and the patient's collected health data. The "
+        "tool handles all the API calls in parallel and returns each surgeon "
+        "with an added 'match_score_display' field (e.g. '98% Match'). "
+        "Pass 'surgeons_json' as a JSON array of surgeon objects (each must "
+        "have an 'npi' field — the rest of the surgeon object is preserved "
+        "and returned as-is).",
+        {
+            "surgeons_json": str,
+            "procedure": str,
+            "bmi": float,
+            "diabetes_status": str,   # "none", "type 1", "type 2"
+            "age": int,                # patient age in years, 0 if unknown
+            "general_health": str,     # "Very Healthy" / "Healthy" / "One Chronic Condition" / "Multiple Chronic Conditions"
+            "gender": str,             # "Male" / "Female" / "No Answer"
+        },
+    )
+    async def get_match_scores_tool(args):
+        try:
+            surgeons = json.loads(args["surgeons_json"])
+            if not isinstance(surgeons, list):
+                return {"content": [{"type": "text", "text": "surgeons_json must be a JSON array"}]}
+        except json.JSONDecodeError as e:
+            return {"content": [{"type": "text", "text": f"Invalid surgeons_json: {e}"}]}
+
+        age_val = args.get("age", 0)
+        features = _build_patient_features(
+            bmi=args.get("bmi") or None,
+            diabetes_status=args.get("diabetes_status", "") or "",
+            age=int(age_val) if age_val else None,
+            general_health=args.get("general_health", "") or "",
+            gender=args.get("gender", "") or "",
+        )
+
+        try:
+            scored = await _score_surgeons(
+                surgeons=surgeons,
+                inf_proc_group=args.get("procedure", ""),
+                patient_features=features,
+            )
+        except Exception as e:
+            logger.exception("Palantir scoring failed")
+            return {"content": [{"type": "text", "text": (
+                f"Match scoring unavailable ({e}). Proceeding without match scores."
+            )}]}
+
+        summary = {
+            "patient_features": features,
+            "scored_surgeons": scored,
+            "note": (
+                "match_score is 0.0-1.0 or null; match_score_display is the "
+                "user-facing percentage string (or empty if unavailable). If "
+                "a score is null, the API call failed or the token is missing "
+                "— continue gracefully without showing a score for that surgeon."
+            ),
+        }
+        return {"content": [{"type": "text", "text": json.dumps(summary, indent=2)}]}
+
+    @tool(
         "lookup_npi",
         "Look up a surgeon in the NPI Registry by their 10-digit NPI number.",
         {"npi": str},
@@ -483,6 +548,7 @@ def create_tools(session_output_dir: str, session_id: str = "", client_ip: str =
     return [
         lookup_surgery_info_tool,
         find_best_surgeon_tool,
+        get_match_scores_tool,
         lookup_knowledge_tool,
         lookup_npi_tool,
         lookup_csv_tool,
@@ -633,6 +699,11 @@ Ask the following health questions ONE AT A TIME:
   - Calculate BMI: BMI = (weight_lbs / height_inches^2) * 703
   - Categories: Under 18.5 Underweight, 18.5-24.9 Normal, 25.0-29.9 Overweight, 30.0+ Obese
 
+**Age:**
+- Ask: "What is your age?"
+- Accept a numeric answer. If the user prefers not to say or gives a non-numeric answer, record age as unknown.
+- Do NOT attach an OPTIONS marker — this is free-text numeric input.
+
 **Gender:**
 - Ask: "What is your gender?"
 - At the END of that message (on its own line, nothing after) append this exact marker:
@@ -682,10 +753,26 @@ metrics (using `lookup_csv_performance` or by searching `find_best_surgeon` \
 results for a name match) and INCLUDE them in your comparison table even if \
 they are not in the top 5. Clearly label their row as "Your Referred Surgeon" \
 so the user can compare them side-by-side with the top-ranked options.
+- **CALL `get_patient_match_scores` ONCE** with:
+  - `surgeons_json`: the JSON-stringified list of the top surgeons (plus the \
+referred surgeon if any). Each object MUST include the surgeon's `npi`.
+  - `procedure`: the exact procedure string from Step 1 (e.g. "Cholecystectomy").
+  - `bmi`: the BMI number collected in Step 2 (or 0 if unknown).
+  - `diabetes_status`: "none", "type 1", or "type 2".
+  - `age`: the patient's age as an integer (0 if unknown).
+  - `general_health`: the exact value the user chose ("Very Healthy", \
+"Healthy", "One Chronic Condition", "Multiple Chronic Conditions").
+  - `gender`: the value the user chose ("Male", "Female", or "No Answer").
+  This returns each surgeon enriched with a `match_score_display` string \
+(e.g. "98% Match"). If a surgeon's score is empty/null, the service was \
+unavailable — simply omit that surgeon's match score column entry in your \
+response and continue gracefully. Do NOT mention the word "Palantir" or any \
+backend service to the user.
 - For the top recommended surgeons, use `check_davinci_listing` to check if \
 they are listed as robotic-assisted surgeons.
-- Present results in a table: name, Informed Score, cases, complication-free \
-rate, cost, facility.
+- Present results in a table: name, Patient Match, Informed Score, cases, \
+complication-free rate, cost, facility. The "Patient Match" column should \
+show the `match_score_display` value (or blank if unavailable).
 - If a surgeon is listed as performing robotic-assisted procedures, highlight \
 this with a note about the advantages of robotic-assisted surgery (use content \
 from `lookup_knowledge` about robotic surgery benefits).
@@ -913,6 +1000,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             "Read", "Glob", "Grep", "Bash", "WebSearch", "WebFetch",
             "mcp__surgeon-tools__lookup_surgery_info",
             "mcp__surgeon-tools__find_best_surgeon",
+            "mcp__surgeon-tools__get_patient_match_scores",
             "mcp__surgeon-tools__lookup_knowledge",
             "mcp__surgeon-tools__lookup_npi",
             "mcp__surgeon-tools__lookup_csv_performance",
