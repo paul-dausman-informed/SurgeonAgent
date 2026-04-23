@@ -779,7 +779,30 @@ from `lookup_knowledge` about robotic surgery benefits).
 - If a robotic-certified surgeon has a similar Informed Score (within 5 points) \
 to the top-ranked surgeon, specifically call them out as a recommended \
 alternative and explain the potential benefits of choosing a robotic surgeon.
-- Recommend the #1 surgeon and ask if they want a full profile generated.
+
+**Final Recommendation Logic:**
+1. Start from the surgeon with the highest Informed Score.
+2. **Patient Match tie-breaker:** If another surgeon in the top list has an \
+Informed Score within 5 points of the top-ranked surgeon AND a meaningfully \
+higher Patient Match Score (at least 5 percentage points higher, e.g. 92% vs \
+85%), recommend that surgeon instead. Explain clearly: "Dr. X has a slightly \
+lower Informed Score than Dr. Y, but their Patient Match Score for your \
+specific profile is notably higher — this model accounts for factors like \
+your age, health status, and clinical history, so I'd recommend Dr. X as a \
+better fit for you."
+3. If multiple surgeons are still in contention (similar Informed Score AND \
+similar Patient Match), prefer the one that is robotic-assisted certified \
+when the procedure supports it.
+4. After announcing your recommendation, ask if they want a full profile \
+generated.
+
+**When explaining the Patient Match Score to the user:** describe it as \
+"a personalized match score that considers your specific health profile \
+(age, BMI, diabetes status, general health) and how similar patients have \
+done with this surgeon." Do NOT mention "Palantir" or any backend system.
+- If Patient Match Scores are unavailable (empty column), fall back to \
+ranking by Informed Score alone and do not reference match scores in your \
+recommendation.
 
 ### Step 5: Generate Profile (if requested)
 If the user wants a full profile, you MUST:
