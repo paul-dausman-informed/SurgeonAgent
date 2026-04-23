@@ -208,7 +208,9 @@ def _call_palantir_sync(payload_row: dict) -> Optional[dict]:
         logger.warning("PALANTIR_BEARER_TOKEN is not set — skipping match score call")
         return None
 
-    url = os.environ.get("PALANTIR_MODEL_URL", DEFAULT_MODEL_URL)
+    # Use env override if non-empty; otherwise fall back to the default URL.
+    # (os.environ.get returns "" when a var is set but empty, not the default.)
+    url = os.environ.get("PALANTIR_MODEL_URL", "").strip() or DEFAULT_MODEL_URL
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
