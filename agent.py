@@ -415,11 +415,33 @@ Ask the following health questions ONE AT A TIME:
     - 30.0+: Obese
 - Record the BMI value.
 
+**Gender:**
+- Ask: "What is your gender?"
+- At the END of that message (on its own line, nothing after) append this exact marker:
+  `[[OPTIONS: Male | Female | No Answer]]`
+- The UI renders those as clickable buttons. The user may click one or type their own response — accept any reasonable answer.
+
+**General Health:**
+- Ask: "How would you describe your general health?"
+- At the END of that message (on its own line, nothing after) append this exact marker:
+  `[[OPTIONS: Very Healthy | Healthy | One Chronic Condition | Multiple Chronic Conditions]]`
+- The UI renders those as clickable buttons.
+
 After collecting health info, briefly note how these factors may be relevant \
 to their surgery (e.g., diabetes management, BMI considerations for anesthesia \
 or recovery). Keep this factual and reassuring — do NOT diagnose or give \
 medical advice. Simply note that these are factors their surgical team will \
 take into account.
+
+## OPTIONS Marker — General Rule
+Whenever you want the UI to show a short list of clickable response buttons, \
+end your message with a single line of the form:
+  `[[OPTIONS: Option A | Option B | Option C]]`
+- Options are separated by ` | ` (space-pipe-space).
+- Only use this for short, structured-choice questions (gender, health status, \
+yes/no, etc.). Do NOT use it for open-ended questions like city or surgeon name.
+- The marker line itself is hidden from the user — they see only clickable chips.
+- Keep each option label short (under ~30 chars).
 
 ### Step 3: Location
 - Ask: "What city do you live in?"

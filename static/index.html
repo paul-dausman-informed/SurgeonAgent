@@ -524,6 +524,55 @@
             }
         }
 
+        // Generic inline options (for gender, health status, etc.)
+        function showInlineOptions(options) {
+            // Remove any existing inline options group first
+            hideInlineOptions();
+            if (!options || !options.length) return;
+
+            const container = document.createElement("div");
+            container.className = "procedure-selector inline-options";
+            container.id = "inline-options";
+
+            const chips = document.createElement("div");
+            chips.className = "procedure-chips";
+
+            options.forEach(opt => {
+                const chip = document.createElement("button");
+                chip.className = "procedure-chip";
+                chip.textContent = opt;
+                chip.type = "button";
+                chip.addEventListener("click", () => selectInlineOption(opt));
+                chips.appendChild(chip);
+            });
+
+            container.appendChild(chips);
+            chatContainer.insertBefore(container, typingIndicator);
+            scrollToBottom();
+        }
+
+        function selectInlineOption(optText) {
+            if (waitingForResponse || !ws || ws.readyState !== WebSocket.OPEN) return;
+            hideInlineOptions();
+            addMessage("user", optText);
+            userInput.value = "";
+            waitingForResponse = true;
+            setInputEnabled(false);
+            typingIndicator.classList.add("visible");
+            scrollToBottom();
+            ws.send(JSON.stringify({ message: optText }));
+        }
+
+        function hideInlineOptions() {
+            const el = document.getElementById("inline-options");
+            if (el) {
+                el.style.opacity = "0";
+                el.style.transform = "translateY(-6px)";
+                el.style.transition = "opacity 0.2s, transform 0.2s";
+                setTimeout(() => el.remove(), 200);
+            }
+        }
+
         function setStatus(text, cls) {
             statusEl.textContent = text;
             statusEl.className = cls;
@@ -533,8 +582,22 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
+        // Extract [[OPTIONS: A | B | C]] markers from assistant text.
+        // Returns { cleanText, options } — options is null if no marker found.
+        const OPTIONS_REGEX = /\[\[OPTIONS:\s*([^\]]+?)\s*\]\]/;
+        function extractOptions(text) {
+            const match = text.match(OPTIONS_REGEX);
+            if (!match) return { cleanText: text, options: null };
+            const cleanText = text.replace(OPTIONS_REGEX, "").replace(/\s+$/, "");
+            const options = match[1].split("|").map(s => s.trim()).filter(Boolean);
+            return { cleanText, options };
+        }
+
         // Simple markdown-to-HTML converter
         function renderMarkdown(text) {
+            // Strip OPTIONS marker before rendering so it never flashes in the UI
+            text = extractOptions(text).cleanText;
+
             let html = text
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
@@ -641,6 +704,10 @@
                     addDownloadLink(data.filename, data.download_url);
                 } else if (data.type === "done") {
                     typingIndicator.classList.remove("visible");
+
+                    // Check the just-completed assistant message for an OPTIONS marker
+                    const { options } = extractOptions(currentText || "");
+
                     currentAssistantEl = null;
                     currentText = "";
                     waitingForResponse = false;
@@ -650,6 +717,9 @@
                     if (isFirstTurn) {
                         isFirstTurn = false;
                         showProcedureSelector();
+                    } else if (options) {
+                        // Render generic inline options (gender, health, etc.)
+                        showInlineOptions(options);
                     }
                 } else if (data.type === "error") {
                     typingIndicator.classList.remove("visible");
@@ -675,8 +745,9 @@
             const text = userInput.value.trim();
             if (!text || waitingForResponse || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-            // Hide procedure selector if user types manually
+            // Hide any selectors if user types manually
             hideProcedureSelector();
+            hideInlineOptions();
 
             addMessage("user", text);
             userInput.value = "";
