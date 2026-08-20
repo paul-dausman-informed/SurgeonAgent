@@ -37,6 +37,14 @@ from typing import Optional
 
 import requests
 
+# Load a .env file if present so local runs pick up SUPABASE_URL / SERVICE_KEY
+# without needing to export env vars in the shell each time.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
