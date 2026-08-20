@@ -29,9 +29,8 @@ COPY static/ ./static/
 COPY SurgeonScores/ ./SurgeonScores/
 COPY NationalTop80Score.csv ./
 COPY cbsa_lookup.json ./
-# davinci_cache.json is optional — Railway will fetch a fresh copy from
-# Supabase Storage at startup. Copy the committed one as a fallback in case
-# Supabase is unavailable.
+# davinci_cache.json is optional local fallback. In production, Railway
+# fetches the cache from the Supabase davinci_surgeons table at startup.
 COPY davinci_cache.json* ./
 COPY rules/ ./rules/
 COPY knowledge/ ./knowledge/

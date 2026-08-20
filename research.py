@@ -37,57 +37,127 @@ _davinci_by_name_city: dict[str, str] = {}
 _davinci_manifest: dict = {}
 
 
-def _load_davinci_cache():
-    """Load davinci_cache.json from Supabase Storage, falling back to local file."""
-    global _davinci_by_npi, _davinci_by_name_city, _davinci_manifest
+_TABLE_PAGE_SIZE = 1000
 
-    data = None
+
+def _fetch_davinci_from_supabase() -> Optional[list[dict]]:
+    """Fetch all rows from the davinci_surgeons Supabase table via PostgREST.
+
+    Paginated via Range headers because Supabase caps single-request results.
+    Returns list of row dicts or None on failure.
+    """
     supabase_url = os.environ.get("SUPABASE_URL", "").strip()
-    # For reads we can use either the anon key or the service key. Prefer anon
-    # if the bucket is public; service key otherwise.
     key = (os.environ.get("SUPABASE_ANON_KEY") or
            os.environ.get("SUPABASE_SERVICE_KEY") or "").strip()
-    bucket = os.environ.get("DAVINCI_BUCKET", "davinci-cache").strip() or "davinci-cache"
+    table = os.environ.get("DAVINCI_TABLE", "davinci_surgeons").strip() or "davinci_surgeons"
 
-    if supabase_url and key:
-        try:
-            url = f"{supabase_url.rstrip('/')}/storage/v1/object/{bucket}/davinci_cache.json"
-            resp = requests.get(
-                url,
-                headers={"Authorization": f"Bearer {key}", "apikey": key},
-                timeout=20,
-            )
-            if resp.ok:
-                data = resp.json()
-                logger.info(f"Loaded da Vinci cache from Supabase Storage bucket '{bucket}'")
-            else:
+    if not supabase_url or not key:
+        return None
+
+    base = f"{supabase_url.rstrip('/')}/rest/v1/{table}"
+    select_url = (
+        f"{base}?select=npi,firstname,lastname,city,state,location,"
+        f"profile_url,procedure_count,procedure_category,"
+        f"specialties,procedures,hospitals,updated_at"
+    )
+
+    all_rows: list[dict] = []
+    offset = 0
+    try:
+        while True:
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "apikey": key,
+                "Range-Unit": "items",
+                "Range": f"{offset}-{offset + _TABLE_PAGE_SIZE - 1}",
+            }
+            resp = requests.get(select_url, headers=headers, timeout=30)
+            if not resp.ok:
                 logger.warning(
-                    f"Supabase da Vinci cache fetch failed: HTTP {resp.status_code}"
+                    f"Supabase davinci_surgeons fetch failed: "
+                    f"HTTP {resp.status_code} — {resp.text[:200]}"
                 )
-        except Exception as e:
-            logger.warning(f"Supabase da Vinci cache fetch exception: {e}")
+                return None
+            page = resp.json()
+            if not isinstance(page, list) or not page:
+                break
+            all_rows.extend(page)
+            if len(page) < _TABLE_PAGE_SIZE:
+                break
+            offset += _TABLE_PAGE_SIZE
+    except Exception as e:
+        logger.warning(f"Supabase davinci_surgeons fetch exception: {e}")
+        return None
 
-    if data is None and os.path.exists(DAVINCI_CACHE_PATH):
+    return all_rows
+
+
+def _load_davinci_cache():
+    """Load davinci_surgeons from Supabase, falling back to local JSON if any."""
+    global _davinci_by_npi, _davinci_by_name_city, _davinci_manifest
+
+    rows = _fetch_davinci_from_supabase()
+
+    if rows is not None:
+        for row in rows:
+            npi = (row.get("npi") or "").strip()
+            key = (
+                f"{(row.get('lastname') or '').lower().strip()}|"
+                f"{(row.get('firstname') or '').lower().strip()}|"
+                f"{(row.get('city') or '').lower().strip()}|"
+                f"{(row.get('state') or '').upper().strip()}"
+            )
+            entry = {
+                "npi": npi,
+                "firstname": row.get("firstname", ""),
+                "lastname": row.get("lastname", ""),
+                "city": row.get("city", ""),
+                "state": row.get("state", ""),
+                "location": row.get("location", ""),
+                "profile_url": row.get("profile_url", ""),
+                "procedure_count": row.get("procedure_count", ""),
+                "procedure_category": row.get("procedure_category", ""),
+                "specialties": row.get("specialties", []) or [],
+                "procedures": row.get("procedures", []) or [],
+                "hospitals": row.get("hospitals", []) or [],
+            }
+            if npi:
+                _davinci_by_npi[npi] = entry
+                _davinci_by_name_city[key] = npi
+            else:
+                synthetic = f"noname:{key}"
+                _davinci_by_npi[synthetic] = entry
+                _davinci_by_name_city[key] = synthetic
+
+        states = sorted({(r.get("state") or "").upper() for r in rows if r.get("state")})
+        _davinci_manifest = {
+            "total_surgeons": len(_davinci_by_npi),
+            "states_covered": states,
+            "source": "Supabase davinci_surgeons table",
+        }
+        logger.info(
+            f"da Vinci cache: {len(_davinci_by_npi)} surgeons across "
+            f"{len(states)} states (loaded from Supabase table)"
+        )
+        return
+
+    # Fallback: local JSON produced by build_davinci_cache.py
+    if os.path.exists(DAVINCI_CACHE_PATH):
         try:
             with open(DAVINCI_CACHE_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            logger.info(f"Loaded da Vinci cache from local file {DAVINCI_CACHE_PATH}")
+            _davinci_by_npi = data.get("by_npi", {}) or {}
+            _davinci_by_name_city = data.get("by_name_city", {}) or {}
+            _davinci_manifest = data.get("manifest", {}) or {}
+            logger.info(
+                f"da Vinci cache: {len(_davinci_by_npi)} surgeons "
+                f"(loaded from local {DAVINCI_CACHE_PATH})"
+            )
+            return
         except Exception as e:
             logger.warning(f"Could not read local da Vinci cache: {e}")
 
-    if data is None:
-        logger.info("No da Vinci cache available — will fall back to live API for all lookups")
-        return
-
-    _davinci_by_npi = data.get("by_npi", {}) or {}
-    _davinci_by_name_city = data.get("by_name_city", {}) or {}
-    _davinci_manifest = data.get("manifest", {}) or {}
-
-    logger.info(
-        f"da Vinci cache: {_davinci_manifest.get('total_surgeons', len(_davinci_by_npi))} "
-        f"surgeons across {len(_davinci_manifest.get('states_covered', []))} states, "
-        f"generated {_davinci_manifest.get('generated_at', 'unknown')}"
-    )
+    logger.info("No da Vinci cache available — will fall back to live API for all lookups")
 
 
 _load_davinci_cache()

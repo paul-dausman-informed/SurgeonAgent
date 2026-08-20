@@ -18,9 +18,12 @@ Usage:
 
 Environment:
     SUPABASE_URL          — required for upload
-    SUPABASE_SERVICE_KEY  — required for upload (service role has storage write)
-    DAVINCI_BUCKET        — optional, defaults to "davinci-cache"
+    SUPABASE_SERVICE_KEY  — required for upload (service role bypasses RLS)
+    DAVINCI_TABLE         — optional, defaults to "davinci_surgeons"
     NOMINATIM_USER_AGENT  — optional custom UA for geocoding
+
+Prerequisite: run supabase_schema.sql in the Supabase SQL editor once to
+create the davinci_surgeons table with the required indexes.
 """
 
 import argparse
@@ -415,36 +418,78 @@ def combine_all_states(states: list[str]) -> dict:
     }
 
 
-def upload_to_supabase(local_path: str) -> bool:
-    """Upload the cache file to Supabase Storage using direct HTTP."""
+UPSERT_BATCH_SIZE = 500
+
+
+def _prepare_rows(combined: dict) -> list[dict]:
+    """Flatten the combined cache into PostgREST-ready row dicts."""
+    rows = []
+    for key, entry in combined["by_npi"].items():
+        rows.append({
+            # Convert empty NPI to None so the generated dedup_key falls
+            # back to the name+city composite.
+            "npi": entry.get("npi") or None,
+            "firstname": entry.get("firstname", ""),
+            "lastname": entry.get("lastname", ""),
+            "city": entry.get("city", ""),
+            "state": entry.get("state", ""),
+            "location": entry.get("location", ""),
+            "profile_url": entry.get("profile_url", ""),
+            "procedure_count": entry.get("procedure_count", ""),
+            "procedure_category": entry.get("procedure_category", ""),
+            "specialties": entry.get("specialties", []) or [],
+            "procedures": entry.get("procedures", []) or [],
+            "hospitals": entry.get("hospitals", []) or [],
+        })
+    return rows
+
+
+def _upsert_batch(rows: list[dict], table_url: str, service_key: str) -> bool:
+    """POST one batch of rows, upserting on the generated dedup_key."""
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "apikey": service_key,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }
+    url = f"{table_url}?on_conflict=dedup_key"
+    try:
+        resp = requests.post(url, json=rows, headers=headers, timeout=60)
+        if resp.ok:
+            return True
+        logger.error(
+            f"Upsert failed: HTTP {resp.status_code} — {resp.text[:400]}"
+        )
+    except requests.RequestException as e:
+        logger.error(f"Upsert exception: {e}")
+    return False
+
+
+def upload_to_supabase(combined: dict) -> bool:
+    """Upsert the combined cache into the davinci_surgeons Supabase table."""
     supabase_url = os.environ.get("SUPABASE_URL", "").strip()
     service_key = os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
-    bucket = os.environ.get("DAVINCI_BUCKET", "davinci-cache").strip() or "davinci-cache"
+    table = os.environ.get("DAVINCI_TABLE", "davinci_surgeons").strip() or "davinci_surgeons"
 
     if not supabase_url or not service_key:
         logger.warning("SUPABASE_URL or SUPABASE_SERVICE_KEY missing — skipping upload")
         return False
 
-    file_name = os.path.basename(local_path)
-    upload_url = f"{supabase_url.rstrip('/')}/storage/v1/object/{bucket}/{file_name}"
+    table_url = f"{supabase_url.rstrip('/')}/rest/v1/{table}"
+    rows = _prepare_rows(combined)
+    logger.info(f"Upserting {len(rows)} rows to '{table}' (batches of {UPSERT_BATCH_SIZE})")
 
-    with open(local_path, "rb") as f:
-        content = f.read()
+    total_ok = 0
+    for i in range(0, len(rows), UPSERT_BATCH_SIZE):
+        batch = rows[i:i + UPSERT_BATCH_SIZE]
+        if not _upsert_batch(batch, table_url, service_key):
+            logger.error(f"Aborting at batch {i // UPSERT_BATCH_SIZE + 1}")
+            return False
+        total_ok += len(batch)
+        logger.info(f"  batch {i // UPSERT_BATCH_SIZE + 1}: {total_ok}/{len(rows)} rows")
 
-    headers = {
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json",
-        "x-upsert": "true",
-    }
-    try:
-        resp = requests.put(upload_url, data=content, headers=headers, timeout=60)
-        if resp.ok:
-            logger.info(f"Uploaded {file_name} to Supabase Storage bucket '{bucket}'")
-            return True
-        logger.error(f"Supabase upload failed: HTTP {resp.status_code} — {resp.text[:300]}")
-    except requests.RequestException as e:
-        logger.error(f"Supabase upload exception: {e}")
-    return False
+    logger.info(f"Uploaded {total_ok} surgeons to table '{table}'")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +567,7 @@ def main():
     )
 
     if not args.no_upload:
-        upload_to_supabase(FINAL_CACHE_PATH)
+        upload_to_supabase(combined)
 
     elapsed = int(time.time() - started)
     logger.info(f"Done in {elapsed // 60}m {elapsed % 60}s")
