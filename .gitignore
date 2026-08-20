@@ -6,5 +6,9 @@ __pycache__/
 .claude/
 node_modules/
 *.docx
+# Per-state work files from build_davinci_cache.py — the combined
+# davinci_cache.json IS committed (it's the loaded artifact), but the
+# per-state incremental files and geocode cache are ephemeral.
+davinci_cache_by_state/
 deploy-azure.sh
 deploy-azure.ps1

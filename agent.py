@@ -304,9 +304,9 @@ async def lookup_csv_tool(args):
 @tool(
     "check_davinci_listing",
     "Check if a surgeon is listed on the Intuitive da Vinci Physician Locator "
-    "(robotic surgery directory). Searches by name and location. Returns "
-    "{listed: true/false, details: str, profile_url: str}.",
-    {"first_name": str, "last_name": str, "city": str, "state": str},
+    "(robotic surgery directory). Searches by name and location. Pass npi "
+    "whenever available for a fast cache hit. Returns {listed, details, profile_url}.",
+    {"first_name": str, "last_name": str, "city": str, "state": str, "npi": str},
 )
 async def check_davinci_tool(args):
     result = _check_davinci(
@@ -314,6 +314,7 @@ async def check_davinci_tool(args):
         last_name=args["last_name"],
         city=args.get("city", ""),
         state=args.get("state", ""),
+        npi=args.get("npi", ""),
     )
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
 

@@ -11,14 +11,126 @@ import os
 import re
 import time
 from collections import defaultdict
+from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, "research_cache")
 PHOTO_DIR = os.path.join(CACHE_DIR, "photos")
+DAVINCI_CACHE_PATH = os.path.join(BASE_DIR, "davinci_cache.json")
+
+# ---------------------------------------------------------------------------
+# da Vinci cache — loaded once at import from Supabase Storage (with local
+# fallback), then queried in memory. See build_davinci_cache.py for the
+# offline scraper that produces this file.
+# ---------------------------------------------------------------------------
+
+_davinci_by_npi: dict[str, dict] = {}
+_davinci_by_name_city: dict[str, str] = {}
+_davinci_manifest: dict = {}
+
+
+def _load_davinci_cache():
+    """Load davinci_cache.json from Supabase Storage, falling back to local file."""
+    global _davinci_by_npi, _davinci_by_name_city, _davinci_manifest
+
+    data = None
+    supabase_url = os.environ.get("SUPABASE_URL", "").strip()
+    # For reads we can use either the anon key or the service key. Prefer anon
+    # if the bucket is public; service key otherwise.
+    key = (os.environ.get("SUPABASE_ANON_KEY") or
+           os.environ.get("SUPABASE_SERVICE_KEY") or "").strip()
+    bucket = os.environ.get("DAVINCI_BUCKET", "davinci-cache").strip() or "davinci-cache"
+
+    if supabase_url and key:
+        try:
+            url = f"{supabase_url.rstrip('/')}/storage/v1/object/{bucket}/davinci_cache.json"
+            resp = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {key}", "apikey": key},
+                timeout=20,
+            )
+            if resp.ok:
+                data = resp.json()
+                logger.info(f"Loaded da Vinci cache from Supabase Storage bucket '{bucket}'")
+            else:
+                logger.warning(
+                    f"Supabase da Vinci cache fetch failed: HTTP {resp.status_code}"
+                )
+        except Exception as e:
+            logger.warning(f"Supabase da Vinci cache fetch exception: {e}")
+
+    if data is None and os.path.exists(DAVINCI_CACHE_PATH):
+        try:
+            with open(DAVINCI_CACHE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            logger.info(f"Loaded da Vinci cache from local file {DAVINCI_CACHE_PATH}")
+        except Exception as e:
+            logger.warning(f"Could not read local da Vinci cache: {e}")
+
+    if data is None:
+        logger.info("No da Vinci cache available — will fall back to live API for all lookups")
+        return
+
+    _davinci_by_npi = data.get("by_npi", {}) or {}
+    _davinci_by_name_city = data.get("by_name_city", {}) or {}
+    _davinci_manifest = data.get("manifest", {}) or {}
+
+    logger.info(
+        f"da Vinci cache: {_davinci_manifest.get('total_surgeons', len(_davinci_by_npi))} "
+        f"surgeons across {len(_davinci_manifest.get('states_covered', []))} states, "
+        f"generated {_davinci_manifest.get('generated_at', 'unknown')}"
+    )
+
+
+_load_davinci_cache()
+
+
+def _davinci_cache_lookup(first_name: str, last_name: str, city: str, state: str,
+                          npi: str = "") -> Optional[dict]:
+    """Return a cache entry if this surgeon is in our da Vinci cache, else None."""
+    if npi and npi in _davinci_by_npi:
+        return _davinci_by_npi[npi]
+    key = f"{last_name.lower().strip()}|{first_name.lower().strip()}|{city.lower().strip()}|{state.upper().strip()}"
+    npi_ref = _davinci_by_name_city.get(key)
+    if npi_ref and npi_ref in _davinci_by_npi:
+        return _davinci_by_npi[npi_ref]
+    return None
+
+
+def _format_davinci_details(entry: dict) -> str:
+    """Format a cache entry into the same 'details' string shape as the live API path."""
+    details_parts = ["Listed in robotic-assisted surgeon directory"]
+    proc_count = entry.get("procedure_count", "")
+    proc_category = entry.get("procedure_category", "")
+    specialties = entry.get("specialties", []) or []
+    procedures = entry.get("procedures", []) or []
+    hospitals = entry.get("hospitals", []) or []
+    location = entry.get("location", "")
+
+    if proc_count:
+        details_parts.append(f"Robotic-assisted procedure count: {proc_count}")
+    elif proc_category:
+        details_parts.append(f"Robotic-assisted procedures: {proc_category}")
+    if specialties:
+        details_parts.append(f"Specialties: {', '.join(specialties)}")
+    if procedures:
+        details_parts.append(
+            f"Procedures: {', '.join(procedures[:5])}"
+            + (" ..." if len(procedures) > 5 else "")
+        )
+    if hospitals:
+        details_parts.append(f"Hospitals: {', '.join(hospitals)}")
+    if location:
+        details_parts.append(f"Location: {location}")
+    return "; ".join(details_parts)
 
 HEADERS = {
     "User-Agent": (
@@ -400,13 +512,31 @@ def _geocode_city_state(city: str, state: str):
     return None, None
 
 
-def check_intuitive_davinci(first_name: str, last_name: str, city: str, state: str) -> dict:
+def check_intuitive_davinci(first_name: str, last_name: str, city: str, state: str,
+                            npi: str = "") -> dict:
     """Check if a surgeon is listed on the Intuitive da Vinci Physician Locator.
 
-    Queries the Intuitive provider-locator API by geocoding the surgeon's
-    city/state and searching within a 100-mile radius.
+    First consults the pre-built cache (davinci_cache.json, loaded at import
+    time from Supabase Storage). If not found there, falls back to the live
+    Intuitive API by geocoding the surgeon's city/state and searching within
+    a 100-mile radius.
+
     Returns {"listed": True/False, "details": str, "profile_url": str}.
     """
+    # --- Cache path (instant if we have data) ---
+    cache_hit = _davinci_cache_lookup(first_name, last_name, city, state, npi=npi)
+    if cache_hit:
+        return {
+            "listed": True,
+            "details": _format_davinci_details(cache_hit),
+            "profile_url": cache_hit.get("profile_url", ""),
+        }
+
+    # If cache is loaded and populated but this surgeon is not in it, treat as
+    # a definitive "not listed" ONLY when cache is recent enough. Otherwise
+    # fall through to live API to reduce false negatives.
+    # For now: always fall through to live API on cache miss (safer).
+
     result = {"listed": False, "details": "", "profile_url": ""}
 
     # Step 1: Geocode the city/state
@@ -533,7 +663,7 @@ def check_intuitive_davinci(first_name: str, last_name: str, city: str, state: s
         page += 1
 
     if not result["listed"]:
-        result["details"] = "Not found in robotic-assisted surgeon directory"
+        result["details"] = "Not found in robotic-assisted surgeon directory (cache + live)"
 
     return result
 

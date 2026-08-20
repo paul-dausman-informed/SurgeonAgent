@@ -427,8 +427,10 @@ def create_tools(session_output_dir: str, session_id: str = "", client_ip: str =
 
     @tool(
         "check_davinci_listing",
-        "Check if a surgeon is listed on the Intuitive da Vinci Physician Locator.",
-        {"first_name": str, "last_name": str, "city": str, "state": str},
+        "Check if a surgeon is listed on the Intuitive da Vinci Physician "
+        "Locator. Pass npi (from find_best_surgeon results) whenever available "
+        "— this gives a fast cache hit without a live API call.",
+        {"first_name": str, "last_name": str, "city": str, "state": str, "npi": str},
     )
     async def check_davinci_tool(args):
         result = _check_davinci(
@@ -436,6 +438,7 @@ def create_tools(session_output_dir: str, session_id: str = "", client_ip: str =
             last_name=args["last_name"],
             city=args.get("city", ""),
             state=args.get("state", ""),
+            npi=args.get("npi", ""),
         )
         return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
 
