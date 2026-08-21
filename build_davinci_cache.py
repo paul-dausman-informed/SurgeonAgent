@@ -30,6 +30,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -272,6 +273,25 @@ def scrape_seed_city(city: str, state: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# Two-letter state code appearing as its own token (with optional trailing zip).
+_STATE_RE = re.compile(r"\b([A-Za-z]{2})\b")
+
+
+def parse_location(location: str) -> tuple[str, str]:
+    """Parse 'City, ST' / 'City, ST 12345' / 'City, State' into (city, state).
+
+    Returns two-letter state code uppercased when detectable, empty otherwise.
+    """
+    if not location or "," not in location:
+        return "", ""
+    parts = location.split(",", 1)
+    city = parts[0].strip()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    m = _STATE_RE.search(rest)
+    state = m.group(1).upper() if m else ""
+    return city, state
+
+
 def normalize_entry(raw_entry: dict) -> Optional[dict]:
     """Extract the useful fields from one API result row."""
     raw = raw_entry.get("Raw", {})
@@ -297,13 +317,27 @@ def normalize_entry(raw_entry: dict) -> Optional[dict]:
         elif isinstance(h, str):
             hospitals.append(h)
 
+    # City/state: use API-provided fields when populated; otherwise parse
+    # from the concatenated Location string (e.g. "Dallas, TX 75201").
+    city = (raw.get("City") or "").strip()
+    state = (raw.get("State") or "").strip()
+    location = raw.get("Location", "") or ""
+    if not city or not state:
+        parsed_city, parsed_state = parse_location(location)
+        if not city:
+            city = parsed_city
+        if not state:
+            state = parsed_state
+    if state:
+        state = state.upper()
+
     return {
         "npi": npi,
         "firstname": firstname,
         "lastname": lastname,
-        "city": (raw.get("City") or "").strip(),
-        "state": (raw.get("State") or "").strip(),
-        "location": raw.get("Location", ""),
+        "city": city,
+        "state": state,
+        "location": location,
         "profile_url": profile_url,
         "procedure_count": raw.get("Surgeonlocatorprocedurecount", ""),
         "procedure_category": raw.get("Surgeonlocatorprocedurecountcategory", ""),
