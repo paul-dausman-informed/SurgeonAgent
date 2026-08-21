@@ -273,23 +273,101 @@ def scrape_seed_city(city: str, state: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-# Two-letter state code appearing as its own token (with optional trailing zip).
-_STATE_RE = re.compile(r"\b([A-Za-z]{2})\b")
+# Full US state / territory names → 2-letter codes.
+_STATE_NAME_TO_CODE = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "district of columbia": "DC", "florida": "FL", "georgia": "GA", "hawaii": "HI",
+    "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME",
+    "maryland": "MD", "massachusetts": "MA", "michigan": "MI", "minnesota": "MN",
+    "mississippi": "MS", "missouri": "MO", "montana": "MT", "nebraska": "NE",
+    "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
+    "new york": "NY", "north carolina": "NC", "north dakota": "ND", "ohio": "OH",
+    "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI",
+    "south carolina": "SC", "south dakota": "SD", "tennessee": "TN", "texas": "TX",
+    "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+    "puerto rico": "PR", "guam": "GU", "virgin islands": "VI",
+    "american samoa": "AS", "northern mariana islands": "MP",
+}
+_STATE_CODES = set(_STATE_NAME_TO_CODE.values())
 
 
 def parse_location(location: str) -> tuple[str, str]:
-    """Parse 'City, ST' / 'City, ST 12345' / 'City, State' into (city, state).
+    """Parse 'City, ST' / 'City, ST 12345' / 'City, State Name' into (city, state).
 
-    Returns two-letter state code uppercased when detectable, empty otherwise.
+    Handles both 2-letter codes ("Dallas, TX") and full state names
+    ("Dover, New Hampshire"). Returns 2-letter code uppercased.
     """
     if not location or "," not in location:
         return "", ""
     parts = location.split(",", 1)
     city = parts[0].strip()
     rest = parts[1].strip() if len(parts) > 1 else ""
-    m = _STATE_RE.search(rest)
-    state = m.group(1).upper() if m else ""
-    return city, state
+    if not rest:
+        return city, ""
+
+    # Strip trailing zip (5 digits or ZIP+4) so "TX 75201" or "New Hampshire 03820"
+    # reduces to just the state portion.
+    rest_no_zip = re.sub(r"\s+\d{5}(-\d{4})?\s*$", "", rest).strip()
+
+    # Try full state name first (case-insensitive)
+    state = _STATE_NAME_TO_CODE.get(rest_no_zip.lower(), "")
+    if state:
+        return city, state
+
+    # Fall back to 2-letter code — must actually be a real US state code
+    m = re.match(r"^\s*([A-Za-z]{2})\s*$", rest_no_zip)
+    if m and m.group(1).upper() in _STATE_CODES:
+        return city, m.group(1).upper()
+
+    return city, ""
+
+
+def _extract_hospitals(hospitals_raw) -> list[str]:
+    """Return a list of hospital name strings from the raw Hospitallist field.
+
+    The API sometimes returns Hospitallist as a JSON-encoded STRING (e.g.
+    '[{"name":"Wentworth-Douglass Hospital","url":"..."}]') rather than a
+    parsed array. If we naively iterate the string, we get characters.
+    So: if it's a string, try to json.loads() it first.
+    """
+    if not hospitals_raw:
+        return []
+
+    if isinstance(hospitals_raw, str):
+        # Only try JSON parse if it actually looks like JSON — bare hospital
+        # name strings should just pass through.
+        stripped = hospitals_raw.strip()
+        if stripped.startswith("[") or stripped.startswith("{"):
+            try:
+                hospitals_raw = json.loads(stripped)
+            except json.JSONDecodeError:
+                return [stripped]  # single hospital name
+        else:
+            return [stripped]
+
+    if isinstance(hospitals_raw, dict):
+        # Single-hospital dict
+        name = hospitals_raw.get("name") or hospitals_raw.get("Name") or ""
+        return [name] if name else []
+
+    if not isinstance(hospitals_raw, list):
+        return []
+
+    hospitals: list[str] = []
+    for h in hospitals_raw:
+        if isinstance(h, dict):
+            n = h.get("name") or h.get("Name") or ""
+            if n:
+                hospitals.append(n)
+        elif isinstance(h, str):
+            # Guard against char-by-char iteration of a mis-typed field:
+            # a real hospital name is >1 char.
+            if len(h) > 1:
+                hospitals.append(h)
+    return hospitals
 
 
 def normalize_entry(raw_entry: dict) -> Optional[dict]:
@@ -307,15 +385,7 @@ def normalize_entry(raw_entry: dict) -> Optional[dict]:
         if seo_url else ""
     )
 
-    hospitals_raw = raw.get("Hospitallist", []) or []
-    hospitals = []
-    for h in hospitals_raw:
-        if isinstance(h, dict):
-            n = h.get("name") or h.get("Name") or ""
-            if n:
-                hospitals.append(n)
-        elif isinstance(h, str):
-            hospitals.append(h)
+    hospitals = _extract_hospitals(raw.get("Hospitallist"))
 
     # City/state: use API-provided fields when populated; otherwise parse
     # from the concatenated Location string (e.g. "Dallas, TX 75201").
